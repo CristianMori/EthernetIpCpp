@@ -1,0 +1,7 @@
+add_executable(scanner_smoke main.cpp)
+target_link_libraries(scanner_smoke PRIVATE ethernetip::protocol)
+target_compile_features(scanner_smoke PRIVATE cxx_std_20)
+
+add_executable(connected_explicit_smoke connected_explicit_smoke.cpp)
+target_link_libraries(connected_explicit_smoke PRIVATE ethernetip::protocol)
+target_compile_features(connected_explicit_smoke PRIVATE cxx_std_20)

@@ -1,0 +1,3 @@
+add_executable(safety_scanner_1734 main.cpp)
+target_link_libraries(safety_scanner_1734 PRIVATE ethernetip::safety ethernetip::protocol)
+target_compile_features(safety_scanner_1734 PRIVATE cxx_std_20)
