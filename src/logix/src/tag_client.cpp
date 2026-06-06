@@ -196,7 +196,7 @@ std::vector<uint8_t> TagClient::send_cip(uint8_t service_code,
 
 std::vector<uint8_t> TagClient::read_tag_raw(std::string_view tag_name,
                                               uint16_t element_count) {
-    auto path = build_symbolic_path(tag_name);
+    auto path = build_tag_path(tag_name);
     std::array<uint8_t, 2> req{};
     ser::write_uint(req, element_count);
     return send_cip(0x4C /*Read_Tag*/, path, req);
@@ -204,7 +204,7 @@ std::vector<uint8_t> TagClient::read_tag_raw(std::string_view tag_name,
 
 void TagClient::write_raw(std::string_view tag_name, uint16_t tag_type,
                            uint16_t element_count, std::span<const uint8_t> value) {
-    auto path = build_symbolic_path(tag_name);
+    auto path = build_tag_path(tag_name);
     std::vector<uint8_t> req(4 + value.size());
     ser::write_uint(req,                                       tag_type);
     ser::write_uint(std::span<uint8_t>(req).subspan(2),       element_count);
@@ -244,7 +244,7 @@ void TagClient::write_string(std::string_view tag_name, std::string_view value,
 void TagClient::write_struct(std::string_view tag_name, uint16_t structure_handle,
                                uint16_t element_count, std::span<const uint8_t> value) {
     // Structure write: tag_type(2) = 0x02A0 + struct_handle(2) + element_count(2) + data
-    auto path = build_symbolic_path(tag_name);
+    auto path = build_tag_path(tag_name);
     std::vector<uint8_t> req(6 + value.size());
     ser::write_uint(req,                                  uint16_t{0x02A0});
     ser::write_uint(std::span<uint8_t>(req).subspan(2),  structure_handle);
@@ -258,7 +258,7 @@ std::vector<uint8_t> TagClient::read_struct_bytes(std::string_view tag_name) {
     // body when the reply would exceed its packet limit. Use Read_Tag_Fragmented
     // (0x52) in a loop. First fragment carries tag_type(2)+struct_handle(2);
     // subsequent fragments carry just tag_type(2).
-    auto path = build_symbolic_path(tag_name);
+    auto path = build_tag_path(tag_name);
     std::vector<uint8_t> out;
     uint32_t byte_offset = 0;
     bool first = true;
@@ -315,7 +315,7 @@ TagClient::read_multiple(const std::vector<std::string>& tag_names) {
     std::vector<std::vector<uint8_t>> subs;
     subs.reserve(tag_names.size());
     for (const auto& n : tag_names) {
-        auto path = build_symbolic_path(n);
+        auto path = build_tag_path(n);
         std::array<uint8_t, 2> req{0x01, 0x00};
         subs.push_back(build_mr_sub_request(0x4C, path, req));
     }
@@ -388,7 +388,7 @@ TagClient::write_multiple(const std::vector<WriteEntry>& writes) {
     std::vector<std::vector<uint8_t>> subs;
     subs.reserve(writes.size());
     for (const auto& w : writes) {
-        auto path = build_symbolic_path(w.name);
+        auto path = build_tag_path(w.name);
         std::vector<uint8_t> data(4 + w.value.size());
         ser::write_uint(data,                                  w.tag_type);
         ser::write_uint(std::span<uint8_t>(data).subspan(2),  w.element_count);
@@ -496,6 +496,18 @@ std::vector<TagInfo> TagClient::browse(std::optional<std::string_view> program) 
             info.is_system        = (sym_type & 0x1000) != 0;
             info.array_dimensions = (sym_type >> 13) & 0x03;
             info.type_code        = static_cast<uint16_t>(sym_type & 0x0FFF);
+
+            // Populate the instance-ID cache used by build_tag_path. Skip
+            // system tags and internal __-prefixed names (Logix uses these
+            // for default values, containers, etc — not user-addressable).
+            if (!info.is_system && info.name.rfind("__", 0) != 0) {
+                if (program.has_value() && !program->empty()) {
+                    program_atoms_[{std::string(*program), info.name}] = info.instance_id;
+                } else {
+                    controller_atoms_[info.name] = info.instance_id;
+                }
+            }
+
             tags.push_back(std::move(info));
             start_instance = inst_id;
         }
@@ -593,106 +605,185 @@ TemplateInfo TagClient::read_template(uint16_t template_instance_id) {
 
 // ---- Symbolic path builder ----
 
-std::vector<uint8_t> TagClient::build_symbolic_path(std::string_view name) {
-    // Split on '.' (struct member access). For each dotted piece, peel any
-    // trailing '[...]' brackets and emit a symbolic segment for the base name
-    // followed by one logical-element segment per comma-separated index.
-    // Studio 5000 multi-dim arrays (arr[1,2,3]) emit three element segments;
-    // chained-bracket syntax (arr[1][2][3]) produces the same wire encoding.
-    std::vector<uint8_t> path;
-    path.reserve(name.size() + 8);
+namespace {
 
-    auto emit_symbolic = [&](std::string_view part) {
-        size_t n = part.size();
-        path.push_back(0x91);
-        path.push_back(static_cast<uint8_t>(n));
-        path.insert(path.end(), part.begin(), part.end());
-        if (n % 2 != 0) path.push_back(0);
-    };
-    auto emit_element = [&](uint32_t v) {
-        if (v <= 0xFF) {                                  // 8-bit element
-            path.push_back(0x28);
-            path.push_back(static_cast<uint8_t>(v));
-        } else if (v <= 0xFFFF) {                         // 16-bit element
-            path.push_back(0x29);
-            path.push_back(0x00);
-            path.push_back(static_cast<uint8_t>(v));
-            path.push_back(static_cast<uint8_t>(v >> 8));
-        } else {                                          // 32-bit element
-            path.push_back(0x2A);
-            path.push_back(0x00);
-            for (int i = 0; i < 4; ++i) {
-                path.push_back(static_cast<uint8_t>(v >> (i * 8)));
-            }
+void emit_symbolic_into(std::vector<uint8_t>& path, std::string_view part) {
+    size_t n = part.size();
+    path.push_back(0x91);
+    path.push_back(static_cast<uint8_t>(n));
+    path.insert(path.end(), part.begin(), part.end());
+    if (n % 2 != 0) path.push_back(0);
+}
+
+void emit_element_into(std::vector<uint8_t>& path, uint32_t v) {
+    if (v <= 0xFF) {
+        path.push_back(0x28);
+        path.push_back(static_cast<uint8_t>(v));
+    } else if (v <= 0xFFFF) {
+        path.push_back(0x29); path.push_back(0x00);
+        path.push_back(static_cast<uint8_t>(v));
+        path.push_back(static_cast<uint8_t>(v >> 8));
+    } else {
+        path.push_back(0x2A); path.push_back(0x00);
+        for (int i = 0; i < 4; ++i)
+            path.push_back(static_cast<uint8_t>(v >> (i * 8)));
+    }
+}
+
+void emit_symbol_instance_into(std::vector<uint8_t>& path, uint32_t inst) {
+    // Logical Class 0x6B + 16-bit Instance.
+    path.push_back(0x20); path.push_back(0x6B);
+    path.push_back(0x25); path.push_back(0x00);
+    path.push_back(static_cast<uint8_t>(inst & 0xFF));
+    path.push_back(static_cast<uint8_t>((inst >> 8) & 0xFF));
+}
+
+// Parse a comma-separated index list (e.g. "1,2,3" or "0x10,2").
+// Returns true if every element parses cleanly as an unsigned integer.
+bool parse_indices(std::string_view s, std::vector<uint32_t>& out) {
+    out.clear();
+    size_t start = 0;
+    while (start <= s.size()) {
+        size_t comma = s.find(',', start);
+        std::string_view tok = s.substr(start,
+            (comma == std::string_view::npos ? s.size() : comma) - start);
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.remove_prefix(1);
+        while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t')) tok.remove_suffix(1);
+        if (tok.empty()) return false;
+        uint32_t v = 0;
+        int base = 10;
+        size_t k = 0;
+        if (tok.size() >= 2 && tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) {
+            base = 16; k = 2;
+            if (k >= tok.size()) return false;
         }
-    };
-
-    // Parse a comma-separated index list (e.g. "1,2,3" or "0x10,2").
-    // Returns true if every element parses cleanly as an unsigned integer.
-    auto parse_indices = [](std::string_view s, std::vector<uint32_t>& out) -> bool {
-        out.clear();
-        size_t start = 0;
-        while (start <= s.size()) {
-            size_t comma = s.find(',', start);
-            std::string_view tok = s.substr(start,
-                (comma == std::string_view::npos ? s.size() : comma) - start);
-            // Trim whitespace.
-            while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.remove_prefix(1);
-            while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t')) tok.remove_suffix(1);
-            if (tok.empty()) return false;
-            uint32_t v = 0;
-            int base = 10;
-            size_t k = 0;
-            if (tok.size() >= 2 && tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) {
-                base = 16;
-                k = 2;
-                if (k >= tok.size()) return false;
-            }
-            for (; k < tok.size(); ++k) {
-                char c = tok[k];
-                int d;
-                if      (c >= '0' && c <= '9') d = c - '0';
-                else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (c - 'a');
-                else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (c - 'A');
-                else return false;
-                if (d >= base) return false;
-                v = v * static_cast<uint32_t>(base) + static_cast<uint32_t>(d);
-            }
-            out.push_back(v);
-            if (comma == std::string_view::npos) break;
-            start = comma + 1;
+        for (; k < tok.size(); ++k) {
+            char c = tok[k];
+            int d;
+            if      (c >= '0' && c <= '9') d = c - '0';
+            else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (c - 'a');
+            else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (c - 'A');
+            else return false;
+            if (d >= base) return false;
+            v = v * static_cast<uint32_t>(base) + static_cast<uint32_t>(d);
         }
-        return !out.empty();
-    };
+        out.push_back(v);
+        if (comma == std::string_view::npos) break;
+        start = comma + 1;
+    }
+    return !out.empty();
+}
 
+// Split a dotted piece into (base, bracket_groups_in_source_order).
+std::pair<std::string_view, std::vector<std::vector<uint32_t>>>
+split_brackets(std::string_view piece) {
+    std::vector<std::vector<uint32_t>> bracket_groups;
+    std::string_view base = piece;
+    while (!base.empty() && base.back() == ']') {
+        size_t open = base.rfind('[');
+        if (open == std::string_view::npos) break;
+        std::string_view inside = base.substr(open + 1, base.size() - open - 2);
+        std::vector<uint32_t> indices;
+        if (!parse_indices(inside, indices)) break;
+        bracket_groups.push_back(std::move(indices));
+        base = base.substr(0, open);
+    }
+    std::reverse(bracket_groups.begin(), bracket_groups.end());
+    return {base, std::move(bracket_groups)};
+}
+
+// Iterate the dotted pieces of a tag name, invoking `fn(piece)` for each.
+template <class F>
+void for_each_dotted(std::string_view name, F fn) {
     size_t i = 0;
-    while (i < name.size()) {
-        // Dotted segment until next '.' or end.
+    while (i <= name.size()) {
         size_t dot = name.find('.', i);
-        std::string_view piece = name.substr(i, (dot == std::string_view::npos ? name.size() : dot) - i);
-
-        // Peel any trailing "[...][...]..." bracket groups off the piece.
-        std::vector<std::vector<uint32_t>> bracket_groups;
-        std::string_view base = piece;
-        while (!base.empty() && base.back() == ']') {
-            size_t open = base.rfind('[');
-            if (open == std::string_view::npos) break;
-            std::string_view inside = base.substr(open + 1, base.size() - open - 2);
-            std::vector<uint32_t> indices;
-            if (!parse_indices(inside, indices)) break;
-            bracket_groups.push_back(std::move(indices));
-            base = base.substr(0, open);
-        }
-        if (!base.empty()) emit_symbolic(base);
-        // bracket_groups was filled right-to-left; emit in source order.
-        for (auto it = bracket_groups.rbegin(); it != bracket_groups.rend(); ++it) {
-            for (uint32_t idx : *it) emit_element(idx);
-        }
-
+        size_t end = (dot == std::string_view::npos) ? name.size() : dot;
+        fn(name.substr(i, end - i));
         if (dot == std::string_view::npos) break;
         i = dot + 1;
     }
+}
+
+} // namespace
+
+std::vector<uint8_t> TagClient::build_symbolic_path(std::string_view name) {
+    std::vector<uint8_t> path;
+    path.reserve(name.size() + 8);
+    for_each_dotted(name, [&](std::string_view piece) {
+        auto [base, groups] = split_brackets(piece);
+        if (!base.empty()) emit_symbolic_into(path, base);
+        for (const auto& grp : groups)
+            for (uint32_t idx : grp) emit_element_into(path, idx);
+    });
     return path;
+}
+
+std::vector<uint8_t> TagClient::build_tag_path(std::string_view name) const {
+    // Split into the head piece and the rest of the dotted suffix.
+    size_t first_dot = name.find('.');
+    std::string_view head = (first_dot == std::string_view::npos)
+                              ? name : name.substr(0, first_dot);
+    auto [head_base, head_brackets] = split_brackets(head);
+    std::string head_base_str(head_base);
+
+    std::vector<uint8_t> path;
+    path.reserve(name.size() + 8);
+
+    // (2) Program-scope drilling: head_base looks like "Program:Foo" and we
+    //     have a second piece to look up.
+    if (head_base_str.rfind("Program:", 0) == 0 && first_dot != std::string_view::npos) {
+        // Find second-piece end (next dot or end of name).
+        size_t second_start = first_dot + 1;
+        size_t second_dot = name.find('.', second_start);
+        std::string_view second = (second_dot == std::string_view::npos)
+                                    ? name.substr(second_start)
+                                    : name.substr(second_start, second_dot - second_start);
+        auto [leaf_base, leaf_brackets] = split_brackets(second);
+        auto it = program_atoms_.find({head_base_str, std::string(leaf_base)});
+        if (it != program_atoms_.end()) {
+            emit_symbolic_into(path, head_base_str);
+            for (const auto& grp : head_brackets)
+                for (uint32_t idx : grp) emit_element_into(path, idx);
+            emit_symbol_instance_into(path, it->second);
+            for (const auto& grp : leaf_brackets)
+                for (uint32_t idx : grp) emit_element_into(path, idx);
+            // Emit remaining dotted pieces (after the leaf) as symbolic+element.
+            if (second_dot != std::string_view::npos) {
+                std::string_view rest = name.substr(second_dot + 1);
+                for_each_dotted(rest, [&](std::string_view piece) {
+                    auto [pb, pgroups] = split_brackets(piece);
+                    if (!pb.empty()) emit_symbolic_into(path, pb);
+                    for (const auto& grp : pgroups)
+                        for (uint32_t idx : grp) emit_element_into(path, idx);
+                });
+            }
+            return path;
+        }
+        // Leaf not in cache — fall back to symbolic for the entire name.
+        return build_symbolic_path(name);
+    }
+
+    // (1) Controller-scope root.
+    auto it = controller_atoms_.find(head_base_str);
+    if (it != controller_atoms_.end()) {
+        emit_symbol_instance_into(path, it->second);
+        for (const auto& grp : head_brackets)
+            for (uint32_t idx : grp) emit_element_into(path, idx);
+        if (first_dot != std::string_view::npos) {
+            std::string_view rest = name.substr(first_dot + 1);
+            for_each_dotted(rest, [&](std::string_view piece) {
+                auto [pb, pgroups] = split_brackets(piece);
+                if (!pb.empty()) emit_symbolic_into(path, pb);
+                for (const auto& grp : pgroups)
+                    for (uint32_t idx : grp) emit_element_into(path, idx);
+            });
+        }
+        return path;
+    }
+
+    // (3) Cache miss.
+    return build_symbolic_path(name);
 }
 
 } // namespace ethernetip::logix

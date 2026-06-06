@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace ethernetip::logix {
@@ -181,6 +182,22 @@ public:
     /// then Template_Read (0x4C) to get the member info + names.
     [[nodiscard]] TemplateInfo read_template(uint16_t template_instance_id);
 
+    /// Build a Logix tag path with ANSI Extended Symbolic segments (0x91) and
+    /// Logical Element segments (0x28/0x29/0x2A) for array indices. Splits on
+    /// '.' for struct member access, and peels trailing '[...]' brackets per
+    /// piece. Multi-dim arrays (`arr[1,2,3]`) and chained brackets
+    /// (`arr[1][2][3]`) produce the same wire encoding. Exposed publicly
+    /// because it's stateless and useful in tests / external tooling.
+    [[nodiscard]] static std::vector<uint8_t> build_symbolic_path(std::string_view name);
+
+    /// Cache-aware tag path builder. When the root tag is in the instance-ID
+    /// cache (populated by browse()), emits a 6-byte logical Symbol Object
+    /// segment (Class 0x6B + 16-bit Instance) instead of the longer ANSI
+    /// symbolic segment. Falls back to build_symbolic_path on cache miss.
+    /// Logix rejects the instance form for the "Program:Foo" prefix piece —
+    /// that stays symbolic — but accepts it for the in-program tag root.
+    [[nodiscard]] std::vector<uint8_t> build_tag_path(std::string_view name) const;
+
 private:
     /// Send an MR request via Unconnected Send (wrapped in SendRRData) and
     /// return (general_status, response_data). Caller decides how to interpret
@@ -202,10 +219,7 @@ private:
     std::vector<uint8_t>
         send_encapsulated(uint16_t command, std::span<const uint8_t> payload);
 
-    /// Helpers — ANSI Extended Symbolic path for dotted tag names, and a
-    /// .NET-style type → Logix-type lookup for write<T>.
-    [[nodiscard]] static std::vector<uint8_t> build_symbolic_path(std::string_view name);
-
+    /// Helper — .NET-style type → Logix-type lookup for write<T>.
     template <class T>
     [[nodiscard]] static constexpr uint16_t guess_tag_type() {
         using namespace logix_data_types;
@@ -226,6 +240,11 @@ private:
     protocol::sock::socket_t socket_     = protocol::sock::invalid;
     uint32_t            session_handle_ = 0;
     std::mutex          io_mu_;                   // serializes request/response on the socket
+
+    // Instance-ID cache populated by browse(). Keys are case-sensitive tag
+    // names exactly as returned by the symbol enumeration. See build_tag_path.
+    std::map<std::string, uint32_t>                       controller_atoms_;
+    std::map<std::pair<std::string, std::string>, uint32_t> program_atoms_;
 };
 
 } // namespace ethernetip::logix
