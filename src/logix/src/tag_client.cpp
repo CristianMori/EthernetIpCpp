@@ -594,9 +594,11 @@ TemplateInfo TagClient::read_template(uint16_t template_instance_id) {
 // ---- Symbolic path builder ----
 
 std::vector<uint8_t> TagClient::build_symbolic_path(std::string_view name) {
-    // Split on '.' first; for each dotted piece, peel off any "[N]" suffixes
-    // and emit each as a separate logical-element segment after the symbolic
-    // segment for the name. Example: "counts[3]" -> symbolic("counts") + elem(3).
+    // Split on '.' (struct member access). For each dotted piece, peel any
+    // trailing '[...]' brackets and emit a symbolic segment for the base name
+    // followed by one logical-element segment per comma-separated index.
+    // Studio 5000 multi-dim arrays (arr[1,2,3]) emit three element segments;
+    // chained-bracket syntax (arr[1][2][3]) produces the same wire encoding.
     std::vector<uint8_t> path;
     path.reserve(name.size() + 8);
 
@@ -625,30 +627,66 @@ std::vector<uint8_t> TagClient::build_symbolic_path(std::string_view name) {
         }
     };
 
+    // Parse a comma-separated index list (e.g. "1,2,3" or "0x10,2").
+    // Returns true if every element parses cleanly as an unsigned integer.
+    auto parse_indices = [](std::string_view s, std::vector<uint32_t>& out) -> bool {
+        out.clear();
+        size_t start = 0;
+        while (start <= s.size()) {
+            size_t comma = s.find(',', start);
+            std::string_view tok = s.substr(start,
+                (comma == std::string_view::npos ? s.size() : comma) - start);
+            // Trim whitespace.
+            while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.remove_prefix(1);
+            while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t')) tok.remove_suffix(1);
+            if (tok.empty()) return false;
+            uint32_t v = 0;
+            int base = 10;
+            size_t k = 0;
+            if (tok.size() >= 2 && tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) {
+                base = 16;
+                k = 2;
+                if (k >= tok.size()) return false;
+            }
+            for (; k < tok.size(); ++k) {
+                char c = tok[k];
+                int d;
+                if      (c >= '0' && c <= '9') d = c - '0';
+                else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (c - 'a');
+                else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (c - 'A');
+                else return false;
+                if (d >= base) return false;
+                v = v * static_cast<uint32_t>(base) + static_cast<uint32_t>(d);
+            }
+            out.push_back(v);
+            if (comma == std::string_view::npos) break;
+            start = comma + 1;
+        }
+        return !out.empty();
+    };
+
     size_t i = 0;
     while (i < name.size()) {
         // Dotted segment until next '.' or end.
         size_t dot = name.find('.', i);
         std::string_view piece = name.substr(i, (dot == std::string_view::npos ? name.size() : dot) - i);
 
-        // Peel any trailing "[N][M]..." indices off the piece.
-        std::vector<uint32_t> indices;
+        // Peel any trailing "[...][...]..." bracket groups off the piece.
+        std::vector<std::vector<uint32_t>> bracket_groups;
         std::string_view base = piece;
         while (!base.empty() && base.back() == ']') {
             size_t open = base.rfind('[');
             if (open == std::string_view::npos) break;
-            uint32_t v = 0;
-            for (size_t k = open + 1; k + 1 < base.size(); ++k) {
-                if (base[k] < '0' || base[k] > '9') { v = static_cast<uint32_t>(-1); break; }
-                v = v * 10 + (base[k] - '0');
-            }
-            if (v == static_cast<uint32_t>(-1)) break;
-            indices.push_back(v);
+            std::string_view inside = base.substr(open + 1, base.size() - open - 2);
+            std::vector<uint32_t> indices;
+            if (!parse_indices(inside, indices)) break;
+            bracket_groups.push_back(std::move(indices));
             base = base.substr(0, open);
         }
         if (!base.empty()) emit_symbolic(base);
-        for (auto it = indices.rbegin(); it != indices.rend(); ++it) {
-            emit_element(*it);
+        // bracket_groups was filled right-to-left; emit in source order.
+        for (auto it = bracket_groups.rbegin(); it != bracket_groups.rend(); ++it) {
+            for (uint32_t idx : *it) emit_element(idx);
         }
 
         if (dot == std::string_view::npos) break;
