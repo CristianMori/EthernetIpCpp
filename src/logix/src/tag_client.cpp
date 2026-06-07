@@ -19,9 +19,11 @@ using cip::EncapsulationCommand;
 using cip::EncapsulationHeader;
 using cip::EncapsulationStatus;
 
-TagClient::TagClient(std::string host, int port, std::string path)
+TagClient::TagClient(std::string host, int port, std::string path,
+                       bool use_connected)
     : host_(std::move(host)), port_(port),
-      route_path_(parse_route_path(path)) {}
+      route_path_(parse_route_path(path)),
+      use_connected_(use_connected) {}
 
 std::vector<uint8_t> TagClient::parse_route_path(std::string_view path) {
     std::vector<uint8_t> out;
@@ -99,10 +101,16 @@ void TagClient::connect() {
     if (session_handle_ == 0) {
         throw std::runtime_error("TagClient: RegisterSession returned session handle 0");
     }
+    if (use_connected_) {
+        open_class3();
+    }
 }
 
 void TagClient::disconnect() noexcept {
     if (socket_ == sock::invalid) return;
+    if (class3_open_) {
+        close_class3();
+    }
     if (session_handle_ != 0) {
         try {
             // UnregisterSession is fire-and-forget — no reply expected.
@@ -185,6 +193,14 @@ TagClient::send_cip_with_status(uint8_t service_code,
     inner_mr[1] = static_cast<uint8_t>(path_words);
     std::memcpy(inner_mr.data() + 2, cip_path.data(), cip_path.size());
     std::memcpy(inner_mr.data() + 2 + cip_path.size(), service_data.data(), service_data.size());
+
+    // Class 3 connected explicit: ride the established connection via
+    // SendUnitData. No route bytes per request (the connection was
+    // opened with the route baked into the Forward_Open's
+    // connection_path), no Unconnected_Send wrap.
+    if (class3_open_) {
+        return send_connected(inner_mr);
+    }
 
     // Wrap in Unconnected_Send (service 0x52, Connection Manager) ONLY when
     // a route path was configured. The EtherNet/IP module of a ControlLogix
@@ -862,6 +878,156 @@ std::vector<uint8_t> TagClient::build_tag_path(std::string_view name) const {
 
     // (3) Cache miss.
     return build_symbolic_path(name);
+}
+
+// ---------------------------------------------------------------------------
+// Class 3 connected explicit messaging
+// ---------------------------------------------------------------------------
+
+void TagClient::open_class3() {
+    using namespace std::chrono;
+    auto ticks = static_cast<uint32_t>(
+        duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+    conn_serial_   = static_cast<uint16_t>(ticks & 0xFFFF);
+    if (conn_serial_ == 0) conn_serial_ = 1;
+    orig_serial_   = ticks;
+    tto_o_conn_id_ = 0x80000000u | conn_serial_;
+    seq_count_     = 0;
+
+    // Forward_Open connection_path: route bytes + Message Router.
+    std::vector<uint8_t> app_path(route_path_.begin(), route_path_.end());
+    app_path.insert(app_path.end(), {0x20, 0x02, 0x24, 0x01});
+
+    // Logix-compatible Class 3 parameters (matches pycomm3 / Studio).
+    constexpr uint16_t net_params = 0x43F8;     // P2P, priority high, fixed 504 B
+    constexpr uint8_t  transport  = 0xA3;       // server, app trigger, class 3
+    constexpr uint32_t rpi        = 2'500'000;  // 2.5 s (inactivity timeout)
+
+    std::vector<uint8_t> fo(36 + app_path.size());
+    fo[0] = 0x07;                                                       // priority/tick
+    fo[1] = 0x09;                                                       // timeout_ticks
+    // OT id (4) at [2..5] = 0 (target picks).
+    ser::write_udint(std::span<uint8_t>(fo).subspan(6, 4), tto_o_conn_id_);
+    ser::write_uint (std::span<uint8_t>(fo).subspan(10, 2), conn_serial_);
+    ser::write_uint (std::span<uint8_t>(fo).subspan(12, 2), orig_vendor_);
+    ser::write_udint(std::span<uint8_t>(fo).subspan(14, 4), orig_serial_);
+    fo[18] = 0x03;                                                      // timeout mult ×32
+    ser::write_udint(std::span<uint8_t>(fo).subspan(22, 4), rpi);
+    ser::write_uint (std::span<uint8_t>(fo).subspan(26, 2), net_params);
+    ser::write_udint(std::span<uint8_t>(fo).subspan(28, 4), rpi);
+    ser::write_uint (std::span<uint8_t>(fo).subspan(32, 2), net_params);
+    fo[34] = transport;
+    fo[35] = static_cast<uint8_t>(app_path.size() / 2);
+    std::memcpy(fo.data() + 36, app_path.data(), app_path.size());
+
+    // Forward_Open targets the LOCAL Connection Manager and must go as
+    // BARE MR — not Unconnected_Send-wrapped. The routing happens at
+    // connection-setup time using the connection_path embedded in the FO
+    // body. Temporarily clear both the Class-3 flag (so we don't recurse)
+    // and the route path (so Phase B doesn't add a UCS wrap).
+    bool was_class3 = class3_open_;
+    std::vector<uint8_t> saved_route = std::move(route_path_);
+    class3_open_ = false;
+    route_path_.clear();
+    std::array<uint8_t, 4> cm_path{0x20, 0x06, 0x24, 0x01};
+    std::pair<uint8_t, std::vector<uint8_t>> result;
+    try {
+        result = send_cip_with_status(0x54, cm_path, fo);
+    } catch (...) {
+        route_path_ = std::move(saved_route);
+        class3_open_ = was_class3;
+        throw;
+    }
+    route_path_ = std::move(saved_route);
+    class3_open_ = was_class3;
+
+    if (result.first != 0) {
+        throw std::runtime_error(
+            std::string("Class 3 Forward_Open failed: status=0x")
+                + std::to_string(static_cast<int>(result.first)));
+    }
+    if (result.second.size() < 8) {
+        throw std::runtime_error("Class 3 Forward_Open: response too short");
+    }
+    oto_t_conn_id_ = ser::read_udint(std::span<const uint8_t>(result.second).subspan(0, 4));
+    class3_open_ = true;
+}
+
+void TagClient::close_class3() noexcept {
+    if (!class3_open_) return;
+    class3_open_ = false;
+    std::vector<uint8_t> saved_route = std::move(route_path_);
+    route_path_.clear();
+    try {
+        std::vector<uint8_t> app_path(saved_route.begin(), saved_route.end());
+        app_path.insert(app_path.end(), {0x20, 0x02, 0x24, 0x01});
+
+        std::vector<uint8_t> close_data(12 + app_path.size());
+        close_data[0] = 0x07;
+        close_data[1] = 0x09;
+        ser::write_uint (std::span<uint8_t>(close_data).subspan(2, 2),  conn_serial_);
+        ser::write_uint (std::span<uint8_t>(close_data).subspan(4, 2),  orig_vendor_);
+        ser::write_udint(std::span<uint8_t>(close_data).subspan(6, 4),  orig_serial_);
+        close_data[10] = static_cast<uint8_t>(app_path.size() / 2);
+        close_data[11] = 0;
+        std::memcpy(close_data.data() + 12, app_path.data(), app_path.size());
+
+        std::array<uint8_t, 4> cm_path{0x20, 0x06, 0x24, 0x01};
+        (void)send_cip_with_status(0x4E, cm_path, close_data);
+    } catch (...) {
+        // best-effort — swallow
+    }
+    route_path_ = std::move(saved_route);
+}
+
+std::pair<uint8_t, std::vector<uint8_t>>
+TagClient::send_connected(std::span<const uint8_t> inner_mr) {
+    seq_count_ = static_cast<uint16_t>((seq_count_ + 1) & 0xFFFF);
+
+    // ConnectedData payload = seq(2) + MR
+    std::vector<uint8_t> cd(2 + inner_mr.size());
+    ser::write_uint(std::span<uint8_t>(cd).subspan(0, 2), seq_count_);
+    std::memcpy(cd.data() + 2, inner_mr.data(), inner_mr.size());
+
+    // SendUnitData payload = InterfaceHandle(4) + Timeout(2) + CPF{
+    //   ConnectedAddress(0x00A1) addr_len=4 + OT_conn_id,
+    //   ConnectedData(0x00B1)    data_len   + cd }
+    std::vector<uint8_t> payload(6 + 2 + 4 + 4 + 4 + cd.size(), 0);
+    ser::write_uint (std::span<uint8_t>(payload).subspan(6, 2),  2);                   // item count
+    ser::write_uint (std::span<uint8_t>(payload).subspan(8, 2),  0x00A1);
+    ser::write_uint (std::span<uint8_t>(payload).subspan(10, 2), 4);
+    ser::write_udint(std::span<uint8_t>(payload).subspan(12, 4), oto_t_conn_id_);
+    ser::write_uint (std::span<uint8_t>(payload).subspan(16, 2), 0x00B1);
+    ser::write_uint (std::span<uint8_t>(payload).subspan(18, 2),
+                       static_cast<uint16_t>(cd.size()));
+    std::memcpy(payload.data() + 20, cd.data(), cd.size());
+
+    auto resp = send_encapsulated(
+        static_cast<uint16_t>(EncapsulationCommand::SendUnitData), payload);
+    if (resp.size() < 8) {
+        throw std::runtime_error("TagClient: SendUnitData reply too short");
+    }
+    size_t off = 6;
+    uint16_t item_count = ser::read_uint(std::span<const uint8_t>(resp).subspan(off, 2));
+    off += 2;
+    for (uint16_t i = 0; i < item_count; ++i) {
+        if (off + 4 > resp.size()) break;
+        uint16_t type_id = ser::read_uint(std::span<const uint8_t>(resp).subspan(off,     2));
+        uint16_t length  = ser::read_uint(std::span<const uint8_t>(resp).subspan(off + 2, 2));
+        off += 4;
+        if (off + length > resp.size()) break;
+        if (type_id == 0x00B1 && length >= 2) {
+            // ConnectedData = seq(2) + MR response
+            auto inner = std::span<const uint8_t>(resp.data() + off + 2, length - 2);
+            auto parsed = cip::mr_codec::try_parse_response(inner);
+            if (!parsed.has_value()) {
+                throw std::runtime_error("TagClient: malformed connected MR response");
+            }
+            return {parsed->status.general_status, std::move(parsed->data)};
+        }
+        off += length;
+    }
+    throw std::runtime_error("TagClient: no ConnectedData item in SendUnitData reply");
 }
 
 } // namespace ethernetip::logix

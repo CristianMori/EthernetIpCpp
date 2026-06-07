@@ -81,8 +81,14 @@ public:
     /// in Unconnected_Send (service 0x52) addressed to the Connection
     /// Manager (class 0x06, instance 1) so the EN module knows where to
     /// forward.
+    /// When `use_connected` is true, connect() additionally issues a Class 3
+    /// Forward_Open to the destination's Message Router with the `path`
+    /// route baked into the connection_path; subsequent requests ride the
+    /// connection via SendUnitData with no per-request route bytes. Faster
+    /// on hot polling loops but adds a Forward_Open/Forward_Close exchange
+    /// around the session.
     explicit TagClient(std::string host, int port = DefaultPort,
-                         std::string path = {});
+                         std::string path = {}, bool use_connected = false);
     ~TagClient();
 
     /// Parse a libplctag-style comma-separated route path into bytes.
@@ -243,6 +249,19 @@ private:
     std::vector<uint8_t>
         send_encapsulated(uint16_t command, std::span<const uint8_t> payload);
 
+    /// Open a Class 3 connected-explicit connection to the destination
+    /// Message Router. Embeds route_path_ + [0x20 0x02 0x24 0x01] in the
+    /// Forward_Open's connection_path, then captures OT/TO connection IDs.
+    void open_class3();
+
+    /// Send Forward_Close. Best-effort.
+    void close_class3() noexcept;
+
+    /// Send an already-encoded MR via SendUnitData over the active Class 3
+    /// connection. Returns (general_status, response_data).
+    std::pair<uint8_t, std::vector<uint8_t>>
+        send_connected(std::span<const uint8_t> inner_mr);
+
     /// Helper — .NET-style type → Logix-type lookup for write<T>.
     template <class T>
     [[nodiscard]] static constexpr uint16_t guess_tag_type() {
@@ -274,6 +293,18 @@ private:
     // Empty means "deliver as bare MR" (works on CompactLogix); when
     // populated, every CIP request is wrapped in Unconnected_Send.
     std::vector<uint8_t> route_path_;
+
+    // Class 3 connected explicit messaging state. use_connected_ captures
+    // the constructor flag; the rest is populated by open_class3() during
+    // connect() and torn down by close_class3() during disconnect().
+    bool      use_connected_ = false;
+    uint32_t  oto_t_conn_id_ = 0;
+    uint32_t  tto_o_conn_id_ = 0;
+    uint16_t  conn_serial_   = 0;
+    uint16_t  orig_vendor_   = 0x0001;
+    uint32_t  orig_serial_   = 0;
+    uint16_t  seq_count_     = 0;
+    bool      class3_open_   = false;
 };
 
 } // namespace ethernetip::logix
