@@ -921,10 +921,11 @@ void TagClient::open_class3() {
     std::memcpy(fo.data() + 36, app_path.data(), app_path.size());
 
     // Forward_Open targets the LOCAL Connection Manager and must go as
-    // BARE MR — not Unconnected_Send-wrapped. The routing happens at
-    // connection-setup time using the connection_path embedded in the FO
-    // body. Temporarily clear both the Class-3 flag (so we don't recurse)
-    // and the route path (so Phase B doesn't add a UCS wrap).
+    // bare MR — not Unconnected_Send-wrapped. The routing is carried
+    // inside the FO body's connection_path (already prefixed with
+    // route_path_ above), not around it. Temporarily clear the Class-3
+    // flag so send_cip_with_status doesn't recurse, and the route path
+    // so it doesn't add a UCS wrap.
     bool was_class3 = class3_open_;
     std::vector<uint8_t> saved_route = std::move(route_path_);
     class3_open_ = false;

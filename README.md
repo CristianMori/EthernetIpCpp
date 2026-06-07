@@ -53,8 +53,12 @@ This is a C++20 port of [EthernetIPSharp](../EthernetIPSharp). All three ports (
 **Logix tag protocol**
 - `Read Tag` (0x4C), `Write Tag` (0x4D), Fragmented variants (0x52/0x53), `Read Modify Write` (0x4E)
 - `Multiple Service Packet` (0x0A) for batched explicit messages
-- Tag browsing via `Get Instance Attribute List` (0x55) — paginated
-- UDT template queries and structure read/write (auto-fragmented for >504-byte structs)
+- Tag browsing via `Get Instance Attribute List` (0x55) — paginated; automatically resolves controller + program scopes and pulls UDT templates
+- UDT template queries and structure read/write (auto-fragmented for structs >504 B)
+- Array indexer syntax in tag names: `counts[3]`, `Temp[10].AnotherArray[4]`, Studio 5000 multi-dim `arr[1,2,3]`
+- ControlLogix backplane routing via a libplctag-style `path` (e.g. `"1,0"` for backplane → slot 0) — wraps each request in `Unconnected_Send` to the Connection Manager
+- Opt-in Class 3 connected explicit messaging (4th `TagClient` ctor arg) — opens a Forward_Open at connect time, every read/write rides `SendUnitData` instead of UCMM
+- Instance-ID cache populated transparently by `browse()` so subsequent reads send a 6-byte Symbol Object segment instead of the longer ANSI symbolic name
 - `TagClient` for connecting to a real PLC and reading/writing tags by name
 - Logix STRING handling (88-byte UDT: LEN(DINT) + DATA(SINT[82]))
 
@@ -274,6 +278,7 @@ conn->set_data_received_handler(
 using ethernetip::logix::TagClient;
 using ethernetip::logix::StructureValue;
 
+// CompactLogix or EN-hosted symbol service — no backplane route required.
 TagClient client("192.168.1.96");
 client.connect();
 
@@ -281,7 +286,15 @@ client.connect();
 int32_t rate = client.read<int32_t>("rate");
 client.write<int32_t>("rate", 1500);
 
-// Read a structured tag by template
+// Array element access — Studio 5000 syntax works directly. Brackets are
+// emitted as CIP Logical Element segments after the symbolic name.
+int32_t third  = client.read<int32_t>("counts[3]");
+int32_t nested = client.read<int32_t>("Temp[10].AnotherArray[4]");
+int32_t multi  = client.read<int32_t>("matrix[1,2,3]");
+
+// Browse populates an internal Symbol-Object instance cache. After this
+// call every subsequent tag access uses the short 6-byte instance-ID form
+// in place of the ANSI symbolic name — no API change, just less wire.
 auto tags = client.browse();
 auto it = std::find_if(tags.begin(), tags.end(),
                         [](const auto& t) { return t.name == "MyUdt"; });
@@ -298,6 +311,30 @@ writer.set<int32_t>("setpoint", 100);
 client.write_struct("MyUdt", tmpl.structure_handle, 1, writer.raw_data());
 
 client.disconnect();
+```
+
+For a **ControlLogix chassis** where the CPU is at a separate backplane slot,
+pass a libplctag-style route as the third constructor argument. Tokens are
+decimal or `0xNN` hex; pairs are `port,link` (port 1 = backplane, link = slot):
+
+```cpp
+// Walk from a 1756-EN2T at .96 to the CPU at slot 0.
+TagClient client("192.168.1.96", 44818, "1,0");
+client.connect();
+int32_t rate = client.read<int32_t>("rate");
+```
+
+For hot polling loops, opt in to Class 3 connected explicit messaging via
+the fourth constructor argument. `connect()` performs a Forward_Open
+against the destination Message Router; every subsequent request rides
+`SendUnitData`. `disconnect()` closes the connection cleanly with a
+Forward_Close.
+
+```cpp
+TagClient client("192.168.1.96", 44818, "1,0", /*use_connected=*/true);
+client.connect();
+for (int i = 0; i < 10'000; ++i)
+    (void)client.read<int32_t>("rate");
 ```
 
 ### Logix tag server
@@ -466,7 +503,7 @@ The test suite covers CIP path parsing, MR codec, encapsulation, scanner ↔ ada
 | Type | What it is |
 |---|---|
 | `LogixDispatcher` | Server side. Dispatches tag services + UDT template queries |
-| `TagClient` | Client side. Connect to a real PLC and read/write tags. Auto-fragments large struct reads. |
+| `TagClient` | Client side. Connect to a real PLC and read/write tags. Accepts an optional libplctag-style routing `path` (e.g. `"1,0"` for backplane → slot 0) and a `use_connected` flag for Class 3 connected explicit messaging. `browse()` populates a Symbol-Object instance-ID cache that shortens every later tag path. Auto-fragments large struct reads. |
 | `TagDatabase`, `Tag` | In-memory tag store with `on_value_changed` callbacks |
 | `logix_data_types` | Standard Logix atomic types (Dint, Real, Int, Sint, Lint, Lreal, Bool) |
 | `StructureValue` | Helper for reading/writing UDT structures by member name |
