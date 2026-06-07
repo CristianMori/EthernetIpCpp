@@ -64,8 +64,32 @@ class TagClient {
 public:
     static constexpr int DefaultPort = 44818;
 
-    explicit TagClient(std::string host, int port = DefaultPort);
+    /// Connect to a Logix controller.
+    ///
+    /// `host` / `port` — the EtherNet/IP module's IP and TCP port (44818).
+    ///
+    /// `path` — libplctag-style comma-separated route path used to walk
+    /// from the EtherNet/IP module to the CPU. Examples:
+    ///   - "" (default): no route, request is delivered to the CIP object
+    ///     hosted in the EtherNet/IP module itself (works for CompactLogix
+    ///     and EN-hosted symbol services).
+    ///   - "1,0":       backplane (port 1), link addr 0 (CPU at slot 0).
+    ///   - "1,1":       backplane, CPU at slot 1.
+    ///   - "1,2,A,192.168.1.50,1,0" — multi-hop through a remote chassis.
+    /// Tokens are decimal (0..255) or 0xNN hex; bytes are passed verbatim
+    /// and even-padded. When a route is set every CIP request is wrapped
+    /// in Unconnected_Send (service 0x52) addressed to the Connection
+    /// Manager (class 0x06, instance 1) so the EN module knows where to
+    /// forward.
+    explicit TagClient(std::string host, int port = DefaultPort,
+                         std::string path = {});
     ~TagClient();
+
+    /// Parse a libplctag-style comma-separated route path into bytes.
+    /// Decimal or 0xNN hex tokens; odd-length results are right-padded
+    /// with 0x00 so the encoded route is an integer number of 16-bit
+    /// CIP words. Empty input returns an empty vector.
+    [[nodiscard]] static std::vector<uint8_t> parse_route_path(std::string_view path);
 
     TagClient(const TagClient&)            = delete;
     TagClient& operator=(const TagClient&) = delete;
@@ -245,6 +269,11 @@ private:
     // names exactly as returned by the symbol enumeration. See build_tag_path.
     std::map<std::string, uint32_t>                       controller_atoms_;
     std::map<std::pair<std::string, std::string>, uint32_t> program_atoms_;
+
+    // Route path used to walk from the EtherNet/IP module to the CPU.
+    // Empty means "deliver as bare MR" (works on CompactLogix); when
+    // populated, every CIP request is wrapped in Unconnected_Send.
+    std::vector<uint8_t> route_path_;
 };
 
 } // namespace ethernetip::logix

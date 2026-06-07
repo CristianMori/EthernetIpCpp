@@ -19,8 +19,50 @@ using cip::EncapsulationCommand;
 using cip::EncapsulationHeader;
 using cip::EncapsulationStatus;
 
-TagClient::TagClient(std::string host, int port)
-    : host_(std::move(host)), port_(port) {}
+TagClient::TagClient(std::string host, int port, std::string path)
+    : host_(std::move(host)), port_(port),
+      route_path_(parse_route_path(path)) {}
+
+std::vector<uint8_t> TagClient::parse_route_path(std::string_view path) {
+    std::vector<uint8_t> out;
+    size_t i = 0;
+    while (i < path.size()) {
+        // Skip leading whitespace and commas.
+        while (i < path.size() && (path[i] == ' ' || path[i] == '\t' || path[i] == ',')) ++i;
+        if (i >= path.size()) break;
+        // Find token end.
+        size_t j = i;
+        while (j < path.size() && path[j] != ',') ++j;
+        std::string_view tok = path.substr(i, j - i);
+        while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t')) tok.remove_suffix(1);
+        i = j;
+        if (tok.empty()) continue;
+        int base = 10;
+        size_t k = 0;
+        if (tok.size() >= 2 && tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) {
+            base = 16; k = 2;
+            if (k >= tok.size())
+                throw std::invalid_argument("route path: empty hex token");
+        }
+        uint32_t v = 0;
+        for (; k < tok.size(); ++k) {
+            char c = tok[k];
+            int d;
+            if      (c >= '0' && c <= '9') d = c - '0';
+            else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (c - 'a');
+            else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (c - 'A');
+            else throw std::invalid_argument(std::string("route path: bad token '") + std::string(tok) + "'");
+            if (d >= base)
+                throw std::invalid_argument(std::string("route path: bad token '") + std::string(tok) + "'");
+            v = v * static_cast<uint32_t>(base) + static_cast<uint32_t>(d);
+        }
+        if (v > 0xFF)
+            throw std::invalid_argument(std::string("route path: byte out of range '") + std::string(tok) + "'");
+        out.push_back(static_cast<uint8_t>(v));
+    }
+    if (out.size() % 2) out.push_back(0);
+    return out;
+}
 
 TagClient::~TagClient() {
     disconnect();
@@ -136,13 +178,49 @@ std::pair<uint8_t, std::vector<uint8_t>>
 TagClient::send_cip_with_status(uint8_t service_code,
                                   std::span<const uint8_t> cip_path,
                                   std::span<const uint8_t> service_data) {
-    // Build MR request: service(1) + path_size_words(1) + path + data
+    // Build the inner MR request: service(1) + path_size_words(1) + path + data
     int path_words = static_cast<int>(cip_path.size()) / 2;
-    std::vector<uint8_t> mr(2u + cip_path.size() + service_data.size());
-    mr[0] = service_code;
-    mr[1] = static_cast<uint8_t>(path_words);
-    std::memcpy(mr.data() + 2, cip_path.data(), cip_path.size());
-    std::memcpy(mr.data() + 2 + cip_path.size(), service_data.data(), service_data.size());
+    std::vector<uint8_t> inner_mr(2u + cip_path.size() + service_data.size());
+    inner_mr[0] = service_code;
+    inner_mr[1] = static_cast<uint8_t>(path_words);
+    std::memcpy(inner_mr.data() + 2, cip_path.data(), cip_path.size());
+    std::memcpy(inner_mr.data() + 2 + cip_path.size(), service_data.data(), service_data.size());
+
+    // Wrap in Unconnected_Send (service 0x52, Connection Manager) ONLY when
+    // a route path was configured. The EtherNet/IP module of a ControlLogix
+    // chassis won't auto-deliver an empty-route Unconnected_Send to the CPU
+    // at slot N; the user must say path="1,N" so the Connection Manager
+    // knows where to forward. When the route is empty the request is sent
+    // as bare MR, which is what CompactLogix and EN-hosted symbol services
+    // expect.
+    std::vector<uint8_t> mr;
+    if (!route_path_.empty()) {
+        constexpr uint8_t priority_tick = 0x07;   // priority 0, time-tick 7 (~ms)
+        constexpr uint8_t timeout_ticks = 0xF9;   // 249 * 2^7 ms ≈ 31.9 s
+        size_t route_words = route_path_.size() / 2;
+        bool pad_embed = (inner_mr.size() % 2) != 0;
+        size_t us_len = 4 + inner_mr.size() + (pad_embed ? 1 : 0) + 2 + route_path_.size();
+        std::vector<uint8_t> us(us_len);
+        size_t off = 0;
+        us[off++] = priority_tick;
+        us[off++] = timeout_ticks;
+        ser::write_uint(std::span<uint8_t>(us).subspan(off, 2),
+                         static_cast<uint16_t>(inner_mr.size())); off += 2;
+        std::memcpy(us.data() + off, inner_mr.data(), inner_mr.size()); off += inner_mr.size();
+        if (pad_embed) { us[off++] = 0; }
+        us[off++] = static_cast<uint8_t>(route_words);
+        us[off++] = 0;                              // reserved
+        std::memcpy(us.data() + off, route_path_.data(), route_path_.size());
+
+        std::array<uint8_t, 4> cm_path{0x20, 0x06, 0x24, 0x01};
+        mr.resize(2 + cm_path.size() + us.size());
+        mr[0] = 0x52;                               // Unconnected_Send
+        mr[1] = static_cast<uint8_t>(cm_path.size() / 2);
+        std::memcpy(mr.data() + 2, cm_path.data(), cm_path.size());
+        std::memcpy(mr.data() + 2 + cm_path.size(), us.data(), us.size());
+    } else {
+        mr = std::move(inner_mr);
+    }
 
     // CPF: NullAddress(0x0000) + UnconnectedData(0x00B2)
     protocol::cpf_helpers::CpfBuilder cpf;
