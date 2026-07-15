@@ -126,9 +126,12 @@ private:
     std::atomic<uint8_t>  ping_count_{0};
     std::atomic<bool>     consumer_active_{false};
     std::atomic<uint16_t> timestamp_{0};
-    /// Our producer's rollover (used by encode on server O->T). Never advanced
-    /// today — our 16-bit timestamp wraps without notice. The target's
-    /// validator is responsible for catching our wraps on its side.
+    /// Our producer's rollover (used by encode on server O->T). Seeded from
+    /// server_config.initial_rollover_value at open, incremented in
+    /// produce_server_data every time timestamp_ wraps 0xFFFF -> 0x0000.
+    /// Extended-format CRC-S5 folds this into the seed, so any spec-compliant
+    /// consumer would drift out of sync after the first ~8.4 s if this
+    /// counter stayed at 0.
     std::atomic<uint16_t> producer_rollover_count_{0};
     /// Target's producer rollover (used by decode on client T<-O). Advanced
     /// here on every observed wire-timestamp wrap. Must be kept distinct

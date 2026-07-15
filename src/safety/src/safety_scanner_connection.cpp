@@ -68,6 +68,11 @@ std::unique_ptr<SafetyScannerConnection> SafetyScannerConnection::open(
     conn->output_data_.assign(server_config.consumed_data_size, 0);
     conn->input_data_size_ = client_config.produced_data_size;
     conn->route_prefix_.assign(route_prefix.begin(), route_prefix.end());
+    // Seed producer state from the values we advertise in the safety segment —
+    // a spec-compliant consumer reads the same values off the segment and
+    // starts its rollover counter there, so both ends must agree from frame 1.
+    conn->timestamp_.store(server_config.initial_timestamp);
+    conn->producer_rollover_count_.store(server_config.initial_rollover_value);
 
     uint32_t tick = static_cast<uint32_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -222,7 +227,11 @@ void SafetyScannerConnection::produce_server_data() {
         if (active) {
             // RPI/128 µs ticks per send while active. We use a fixed 50 ms RPI
             // → 50000/128 ≈ 390 ticks per send (matches the C# implementation).
-            timestamp_.fetch_add(static_cast<uint16_t>(50000 / 128));
+            uint16_t prev_ts = timestamp_.fetch_add(static_cast<uint16_t>(50000 / 128));
+            uint16_t new_ts  = static_cast<uint16_t>(prev_ts + (50000 / 128));
+            if (new_ts < prev_ts) {
+                producer_rollover_count_.fetch_add(1);
+            }
         }
         auto mode = ModeByte::create(run_idle, ping);
 
