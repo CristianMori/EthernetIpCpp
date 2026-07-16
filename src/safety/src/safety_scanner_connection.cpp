@@ -221,8 +221,17 @@ void SafetyScannerConnection::produce_server_data() {
     try {
         bool active     = consumer_active_.load();
         bool run_idle   = active && run_idle_.load();
-        uint16_t ts     = active ? timestamp_.load() : uint16_t{0};
         uint8_t  ping   = ping_count_.load();
+
+        // Snapshot both counters BEFORE advancing them. The frame we're about
+        // to encode carries the OLD timestamp with the OLD rollover; the
+        // consumer detects the wrap from the *next* frame's timestamp jump and
+        // bumps its own rollover to match. Reading rollover after the bump
+        // would emit (old_ts, new_rollover) on the wrap frame, which CRCs
+        // with the wrong seed and shows up as one failed frame per wrap
+        // boundary.
+        uint16_t ts       = active ? timestamp_.load() : uint16_t{0};
+        uint16_t rollover = producer_rollover_count_.load();
 
         if (active) {
             // RPI/128 µs ticks per send while active. We use a fixed 50 ms RPI
@@ -242,7 +251,7 @@ void SafetyScannerConnection::produce_server_data() {
             wire_len = frame_codec::encode(
                 buf, output_data_, format_, mode, ts,
                 pid_seed_s1_, pid_seed_s3_, pid_seed_s5_,
-                producer_rollover_count_.load());
+                rollover);
         }
         uint32_t seq = server_encap_seq_.fetch_add(1) + 1;
         udp_.send_io_data(server_target_endpoint_, server_oto_t_id_, seq,
