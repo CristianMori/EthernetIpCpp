@@ -116,6 +116,14 @@ struct IoConnection {
     ConnectionState state = ConnectionState::Established;
     std::chrono::steady_clock::time_point last_received =
         std::chrono::steady_clock::now();
+    /// Per CIP Vol 1 §3-4.5.2, the consumer connection-timeout timer must
+    /// not start until the first inbound frame arrives. Without this flag
+    /// the watchdog would count from FwdOpen accept and close the
+    /// connection whenever the producer takes longer than
+    /// `rpi * timeout_multiplier` to start streaming — which is common
+    /// over Wi-Fi + VPN or on scanners that establish both directions of
+    /// a paired safety connection before starting either producer.
+    bool first_received = false;
 
     /// Map a timeout multiplier code to its actual value (4, 8, 16, ..., 512).
     [[nodiscard]] static int multiplier_value(uint8_t code) noexcept;

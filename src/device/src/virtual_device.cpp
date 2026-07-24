@@ -191,6 +191,7 @@ void VirtualDevice::on_udp_message(std::unique_ptr<messages::Message> msg) {
     }
 
     conn->last_received = std::chrono::steady_clock::now();
+    conn->first_received = true;
     handle_received_io_data(*conn, cpf.payload);
 }
 
@@ -247,6 +248,7 @@ void VirtualDevice::watchdog_loop() {
         for (auto* conn : connection_manager_.active_connections()) {
             if (conn->state != ConnectionState::Established) continue;
             if (conn->oto_t_rpi == 0) continue;   // T->O-only connection has no inbound watchdog
+            if (!conn->first_received) continue;  // CIP Vol 1 §3-4.5.2: don't count until first frame
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                 now - conn->last_received).count();
             if (elapsed > conn->connection_timeout_us()) {
