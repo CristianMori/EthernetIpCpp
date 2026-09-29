@@ -3,10 +3,12 @@
 #include "ethernetip/cip/cip_attribute.hpp"
 #include "ethernetip/logix/multi_service_handler.hpp"
 #include "ethernetip/logix/tag_services.hpp"
+#include "ethernetip/logix/walker.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <variant>
 
 namespace ethernetip::logix {
 
@@ -143,6 +145,71 @@ CipServiceResponse LogixDispatcher::on_unhandled(uint8_t service_code,
                                                    const CipPath& path,
                                                    std::span<const uint8_t> data,
                                                    uint8_t default_status) {
+    // Prefer the ordered segments list when present (walker-aware path).
+    // Fall back to the flat symbolic_name lookup for callers who built
+    // CipPath by initializer without populating segments.
+    if (!path.segments.empty()) {
+        // Find first symbolic segment.
+        size_t first_sym = path.segments.size();
+        for (size_t i = 0; i < path.segments.size(); ++i) {
+            if (std::holds_alternative<cip::SymbolicPathSegment>(path.segments[i])) {
+                first_sym = i;
+                break;
+            }
+        }
+        if (first_sym < path.segments.size()) {
+            const auto& first_name =
+                std::get<cip::SymbolicPathSegment>(path.segments[first_sym]).name;
+
+            // Program-scope prefix.
+            if (first_name.rfind("Program:", 0) == 0) {
+                std::string program_name = first_name.substr(std::string("Program:").size());
+                if (tags_->find_program(program_name) == nullptr) {
+                    return CipServiceResponse::error(service_code, CipStatus::error(0x05));
+                }
+                size_t root_sym = path.segments.size();
+                for (size_t i = first_sym + 1; i < path.segments.size(); ++i) {
+                    if (std::holds_alternative<cip::SymbolicPathSegment>(path.segments[i])) {
+                        root_sym = i;
+                        break;
+                    }
+                }
+                if (root_sym >= path.segments.size()) {
+                    return CipServiceResponse::error(service_code, CipStatus::error(0x05));
+                }
+                const auto& root_name =
+                    std::get<cip::SymbolicPathSegment>(path.segments[root_sym]).name;
+                Tag* tag = tags_->find_program_tag(program_name, root_name);
+                if (tag == nullptr) {
+                    return CipServiceResponse::error(service_code, CipStatus::error(0x05));
+                }
+                return dispatch_via_walker(*tag, service_code, data,
+                                            std::span<const cip::PathSegment>(path.segments.data() + root_sym + 1,
+                                                                                path.segments.size() - root_sym - 1));
+            }
+
+            // Controller scope.
+            std::string key = to_lower(first_name);
+            Tag* tag = nullptr;
+            {
+                std::scoped_lock lock(symbol_cache_mu_);
+                auto it = symbol_cache_.find(key);
+                if (it != symbol_cache_.end()) tag = it->second;
+            }
+            if (tag == nullptr) {
+                tag = tags_->find_by_name(first_name);
+                if (tag == nullptr) {
+                    return CipServiceResponse::error(service_code, CipStatus::error(0x05));
+                }
+                std::scoped_lock lock(symbol_cache_mu_);
+                symbol_cache_[std::move(key)] = tag;
+            }
+            return dispatch_via_walker(*tag, service_code, data,
+                                        std::span<const cip::PathSegment>(path.segments.data() + first_sym + 1,
+                                                                            path.segments.size() - first_sym - 1));
+        }
+    }
+
     if (path.symbolic_name.has_value()) {
         std::string key = to_lower(*path.symbolic_name);
         Tag* tag = nullptr;
@@ -163,6 +230,30 @@ CipServiceResponse LogixDispatcher::on_unhandled(uint8_t service_code,
         return dispatch_tag_service(*tag, service_code, data, elem);
     }
     return cip::CipDispatcher::on_unhandled(service_code, path, data, default_status);
+}
+
+CipServiceResponse LogixDispatcher::dispatch_via_walker(Tag& tag, uint8_t service_code,
+                                                          std::span<const uint8_t> data,
+                                                          std::span<const cip::PathSegment> post_root) {
+    // Filter out logical segments interleaved in the post-root region.
+    std::vector<cip::PathSegment> filtered;
+    filtered.reserve(post_root.size());
+    for (const auto& s : post_root) {
+        if (!std::holds_alternative<cip::LogicalPathSegment>(s)) filtered.push_back(s);
+    }
+    if (filtered.empty()) {
+        return dispatch_tag_service(tag, service_code, data, 0);
+    }
+    std::string err;
+    auto walked = walk(tag, filtered, *tags_, &err);
+    if (!walked.has_value()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x05));
+    }
+    switch (service_code) {
+        case tag_services::ReadTag:  return tag_services::handle_read_tag_at(tag, service_code, data, *walked);
+        case tag_services::WriteTag: return tag_services::handle_write_tag_at(tag, service_code, data, *walked);
+        default:                      return dispatch_tag_service(tag, service_code, data, 0);
+    }
 }
 
 CipServiceResponse LogixDispatcher::dispatch_tag_service(Tag& tag, uint8_t service_code,

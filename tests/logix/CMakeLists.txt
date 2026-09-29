@@ -13,3 +13,7 @@ ethernetip_add_test(test_logix_dispatcher
 ethernetip_add_test(test_walker
     SOURCES test_walker.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_walker_dispatch
+    SOURCES test_walker_dispatch.cpp
+    LIBS    ethernetip::logix)
