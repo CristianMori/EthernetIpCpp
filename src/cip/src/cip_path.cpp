@@ -27,12 +27,13 @@ std::pair<CipPath, int> CipPath::parse(std::span<const uint8_t> data) {
             if (char_count % 2 != 0) ++offset;  // pad to word boundary
 
             if (!has_symbolic) {
-                symbolic = std::move(name);
+                symbolic = name;
                 has_symbolic = true;
             } else {
                 symbolic += '.';
                 symbolic += name;
             }
+            path.segments.push_back(SymbolicPathSegment{name});
             continue;
         }
 
@@ -69,11 +70,26 @@ std::pair<CipPath, int> CipPath::parse(std::span<const uint8_t> data) {
         }
 
         switch (logical_type) {
-            case LogicalTypeClassId:         path.class_id         = value; break;
-            case LogicalTypeInstanceId:      path.instance_id      = value; break;
-            case LogicalTypeAttributeId:     path.attribute_id     = static_cast<uint16_t>(value); break;
-            case LogicalTypeConnectionPoint: path.connection_point = static_cast<uint16_t>(value); break;
-            case LogicalTypeElementId:       path.element_id       = value; break;
+            case LogicalTypeClassId:
+                path.class_id = value;
+                path.segments.push_back(LogicalPathSegment{LogicalKind::ClassId, value});
+                break;
+            case LogicalTypeInstanceId:
+                path.instance_id = value;
+                path.segments.push_back(LogicalPathSegment{LogicalKind::InstanceId, value});
+                break;
+            case LogicalTypeAttributeId:
+                path.attribute_id = static_cast<uint16_t>(value);
+                path.segments.push_back(LogicalPathSegment{LogicalKind::AttributeId, value});
+                break;
+            case LogicalTypeConnectionPoint:
+                path.connection_point = static_cast<uint16_t>(value);
+                path.segments.push_back(LogicalPathSegment{LogicalKind::ConnectionPoint, value});
+                break;
+            case LogicalTypeElementId:
+                path.element_id = value;
+                path.segments.push_back(ElementPathSegment{value});
+                break;
             default: break;
         }
     }

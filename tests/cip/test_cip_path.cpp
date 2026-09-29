@@ -57,3 +57,61 @@ TEST(CipPathTest, ToStringIncludesEachField) {
     EXPECT_NE(s.find("Instance=1"), std::string::npos);
     EXPECT_NE(s.find("Attr=3"), std::string::npos);
 }
+
+// --- Ordered segments list tests (gap 1/2 foundation) ---
+
+TEST(CipPathSegmentTest, ParsesProgramScopedTag) {
+    std::vector<uint8_t> bytes = {
+        0x91, 12, 'P','r','o','g','r','a','m',':','M','a','i','n',
+        0x91, 5, 'M','y','T','a','g', 0x00,
+    };
+    auto [path, consumed] = CipPath::parse(bytes);
+    EXPECT_EQ(consumed, static_cast<int>(bytes.size()));
+    ASSERT_EQ(path.segments.size(), 2u);
+    auto* s0 = std::get_if<SymbolicPathSegment>(&path.segments[0]);
+    ASSERT_NE(s0, nullptr);
+    EXPECT_EQ(s0->name, "Program:Main");
+    auto* s1 = std::get_if<SymbolicPathSegment>(&path.segments[1]);
+    ASSERT_NE(s1, nullptr);
+    EXPECT_EQ(s1->name, "MyTag");
+    EXPECT_EQ(*path.symbolic_name, "Program:Main.MyTag");
+}
+
+TEST(CipPathSegmentTest, ParsesElementBetweenMembers) {
+    std::vector<uint8_t> bytes = {
+        0x91, 4, 'L','i','n','e',
+        0x28, 0x02,
+        0x91, 5, 'M','o','t','o','r', 0x00,
+        0x91, 5, 'F','a','u','l','t', 0x00,
+    };
+    auto [path, _] = CipPath::parse(bytes);
+    ASSERT_EQ(path.segments.size(), 4u);
+    EXPECT_EQ(std::get<SymbolicPathSegment>(path.segments[0]).name, "Line");
+    EXPECT_EQ(std::get<ElementPathSegment>(path.segments[1]).index, 2u);
+    EXPECT_EQ(std::get<SymbolicPathSegment>(path.segments[2]).name, "Motor");
+    EXPECT_EQ(std::get<SymbolicPathSegment>(path.segments[3]).name, "Fault");
+}
+
+TEST(CipPathSegmentTest, ParsesMultiDimIndices) {
+    std::vector<uint8_t> bytes = {
+        0x91, 6, 'M','a','t','r','i','x',
+        0x28, 0x01,
+        0x28, 0x02,
+    };
+    auto [path, _] = CipPath::parse(bytes);
+    ASSERT_EQ(path.segments.size(), 3u);
+    EXPECT_EQ(std::get<ElementPathSegment>(path.segments[1]).index, 1u);
+    EXPECT_EQ(std::get<ElementPathSegment>(path.segments[2]).index, 2u);
+    // Back-compat: last element wins in flat element_id.
+    EXPECT_EQ(*path.element_id, 2u);
+}
+
+TEST(CipPathSegmentTest, LogicalSegmentsAppearInOrder) {
+    std::vector<uint8_t> bytes = {0x20, 0x06, 0x24, 0x01};
+    auto [path, _] = CipPath::parse(bytes);
+    ASSERT_EQ(path.segments.size(), 2u);
+    EXPECT_EQ(std::get<LogicalPathSegment>(path.segments[0]).kind, LogicalKind::ClassId);
+    EXPECT_EQ(std::get<LogicalPathSegment>(path.segments[0]).value, 6u);
+    EXPECT_EQ(std::get<LogicalPathSegment>(path.segments[1]).kind, LogicalKind::InstanceId);
+    EXPECT_EQ(std::get<LogicalPathSegment>(path.segments[1]).value, 1u);
+}
