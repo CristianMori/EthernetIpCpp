@@ -17,3 +17,7 @@ ethernetip_add_test(test_walker
 ethernetip_add_test(test_walker_dispatch
     SOURCES test_walker_dispatch.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_persistence
+    SOURCES test_persistence.cpp
+    LIBS    ethernetip::logix)
