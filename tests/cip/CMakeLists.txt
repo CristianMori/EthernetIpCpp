@@ -25,3 +25,7 @@ ethernetip_add_test(test_dispatcher
 ethernetip_add_test(test_unconnected_send
     SOURCES test_unconnected_send.cpp
     LIBS    ethernetip::cip)
+
+ethernetip_add_test(test_cip_crc
+    SOURCES test_cip_crc.cpp
+    LIBS    ethernetip::cip)
