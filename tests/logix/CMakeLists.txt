@@ -9,3 +9,7 @@ ethernetip_add_test(test_tag_services
 ethernetip_add_test(test_logix_dispatcher
     SOURCES test_logix_dispatcher.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_walker
+    SOURCES test_walker.cpp
+    LIBS    ethernetip::logix)
