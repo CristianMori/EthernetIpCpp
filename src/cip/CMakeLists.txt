@@ -12,6 +12,7 @@ add_library(ethernetip_cip STATIC
     src/cip_class.cpp
     src/cip_dispatcher.cpp
     src/path_builder.cpp
+    src/unconnected_send.cpp
 )
 add_library(ethernetip::cip ALIAS ethernetip_cip)
 

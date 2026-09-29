@@ -1,5 +1,8 @@
 #include "ethernetip/protocol/eip_scanner.hpp"
 
+#include "ethernetip/cip/path_builder.hpp"
+#include "ethernetip/cip/unconnected_send.hpp"
+
 #include "ethernetip/cip/data_serializer.hpp"
 #include "ethernetip/cip/encapsulation.hpp"
 #include "ethernetip/cip/mr_codec.hpp"
@@ -168,6 +171,26 @@ cip::CipServiceResponse EipScanner::send_explicit(uint8_t service_code,
                                                     std::span<const uint8_t> path_bytes,
                                                     std::span<const uint8_t> service_data) {
     return send_explicit_raw(service_code, path_bytes, service_data).response;
+}
+
+cip::CipServiceResponse EipScanner::send_generic(uint8_t service_code,
+                                                   uint32_t class_id,
+                                                   uint32_t instance_id,
+                                                   std::optional<uint16_t> attribute_id,
+                                                   std::span<const uint8_t> data,
+                                                   std::span<const uint8_t> route_path) {
+    auto path_bytes = cip::build_path(class_id, instance_id, attribute_id);
+    if (route_path.empty()) {
+        return send_explicit(service_code, path_bytes, data);
+    }
+    auto inner = cip::unconnected_send::build_inner_mr(service_code, path_bytes, data);
+    auto outer = cip::unconnected_send::wrap(inner, route_path);
+    // outer = service(1) + path_size_words(1) + path(path_size*2) + rest.
+    uint8_t outer_service = outer[0];
+    size_t outer_path_len = static_cast<size_t>(outer[1]) * 2;
+    std::vector<uint8_t> outer_path(outer.begin() + 2, outer.begin() + 2 + outer_path_len);
+    std::vector<uint8_t> outer_data(outer.begin() + 2 + outer_path_len, outer.end());
+    return send_explicit(outer_service, outer_path, outer_data);
 }
 
 EipScanner::ExplicitRawResult

@@ -21,3 +21,7 @@ ethernetip_add_test(test_mr_codec
 ethernetip_add_test(test_dispatcher
     SOURCES test_dispatcher.cpp
     LIBS    ethernetip::cip)
+
+ethernetip_add_test(test_unconnected_send
+    SOURCES test_unconnected_send.cpp
+    LIBS    ethernetip::cip)
