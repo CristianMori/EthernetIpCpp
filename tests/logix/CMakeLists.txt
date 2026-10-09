@@ -25,3 +25,7 @@ ethernetip_add_test(test_persistence
 ethernetip_add_test(test_unsigned_and_bitstring_types
     SOURCES test_unsigned_and_bitstring_types.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_tag_client_unsigned_round_trip
+    SOURCES test_tag_client_unsigned_round_trip.cpp
+    LIBS    ethernetip::logix ethernetip::device ethernetip::protocol)
