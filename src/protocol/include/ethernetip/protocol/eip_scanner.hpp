@@ -13,6 +13,8 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -52,6 +54,18 @@ public:
     cip::CipServiceResponse send_explicit(uint8_t service_code,
                                             std::span<const uint8_t> path_bytes,
                                             std::span<const uint8_t> service_data);
+
+    /// Idiomatic wrapper for arbitrary CIP requests to class/instance/attribute.
+    /// Wraps in Unconnected_Send through the Connection Manager when
+    /// route_path is non-empty (backplane routing to a CPU in another slot);
+    /// otherwise sends as bare MR. attribute_id may be std::nullopt when the
+    /// service targets the instance directly (e.g. Get_Attribute_All).
+    cip::CipServiceResponse send_generic(uint8_t service_code,
+                                          uint32_t class_id,
+                                          uint32_t instance_id,
+                                          std::optional<uint16_t> attribute_id = std::nullopt,
+                                          std::span<const uint8_t> data = {},
+                                          std::span<const uint8_t> route_path = {});
 
     struct ExplicitRawResult {
         cip::CipServiceResponse response;

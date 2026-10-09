@@ -2,6 +2,7 @@
 
 #include "ethernetip/cip/cip_service.hpp"
 #include "ethernetip/logix/tag.hpp"
+#include "ethernetip/logix/walker.hpp"
 
 #include <cstdint>
 #include <span>
@@ -40,5 +41,16 @@ inline constexpr int MaxReplyData = 480;
 /// Read Modify Write (0x4E). Request: mask_size (UINT) + OR_mask + AND_mask.
 [[nodiscard]] cip::CipServiceResponse handle_read_modify_write(
     Tag& tag, uint8_t service_code, std::span<const uint8_t> data);
+
+/// Walker-aware Read Tag: operates at the walker-resolved offset with the
+/// walker's type_code. BOOL bit reads emit a single 0x01/0x00 byte.
+[[nodiscard]] cip::CipServiceResponse handle_read_tag_at(
+    const Tag& tag, uint8_t service_code, std::span<const uint8_t> data,
+    const WalkResult& walked);
+
+/// Walker-aware Write Tag. BOOL bit writes route through Tag::atomic_set_bit.
+[[nodiscard]] cip::CipServiceResponse handle_write_tag_at(
+    Tag& tag, uint8_t service_code, std::span<const uint8_t> data,
+    const WalkResult& walked);
 
 } // namespace ethernetip::logix::tag_services

@@ -61,6 +61,20 @@ This is a C++20 port of [EthernetIPSharp](../EthernetIPSharp). All three ports (
 - Instance-ID cache populated transparently by `browse()` so subsequent reads send a 6-byte Symbol Object segment instead of the longer ANSI symbolic name
 - `TagClient` for connecting to a real PLC and reading/writing tags by name
 - Logix STRING handling (88-byte UDT: LEN(DINT) + DATA(SINT[82]))
+- `EipScanner::send_generic(service, class, instance, attribute, data, route)` — idiomatic CIP request wrapper with optional `Unconnected_Send` backplane routing
+
+**Logix tag server (Studio-5000-compatible)**
+- Full CIP Vol 1 §C-6.1 elementary type family — `Bool`, signed integers (`Sint`/`Int`/`Dint`/`Lint`), unsigned integers (`Usint`/`Uint`/`Udint`/`Ulint`), floats (`Real`/`Lreal`), and bit strings (`Byte`/`Word`/`Dword`/`Lword`)
+- Program-scoped tags — clients address them as `Program:Cell.Timer1.PRE`; `TagDatabase::register_program` + `add_program_tag` populate a per-program scope with its own instance-id space
+- Nested UDT templates via `add_template` (auto-computes layout) or `add_template_prebuilt(std::unique_ptr<TemplateDefinition>)` — the transpiler escape hatch for L5X exports including AOI backing structures (32-per-DINT BOOL packing) and STRING
+- Segment-aware path walker (`ethernetip::logix::walk`) — a CIP request for `Motor.Timer.PRE`, `Motor.DN`, `Line[2].Speed`, `Matrix[1,2,3]` returns the right bytes and the right type code
+- Multi-dimensional arrays: `add_tag_dims("Matrix", Dint, {5,10,4})` with row-major indexing and under-index detection
+- DWORD-packed BOOL arrays: `add_tag("Flags", Bool, 32)` occupies 4 bytes; `Flags[5]` addresses bit 5 of byte 0
+- Atomic BOOL bit RMW via `Tag::atomic_set_bit` — uses `std::atomic_ref<uint32_t>` on the containing 4-byte word
+- `write_silent<T>`, `set_data_silent`, `TagDatabase::set_suppress_events` for the transpiler-generated scan hot path
+- Optional dirty-tag tracking with `enable_dirty_tracking()` / `drain_dirty()`
+- `persistence::save` / `load` — compact binary snapshot byte-for-byte compatible with the C#, Rust, and Python ports (same `EIPS` magic + version + LE fields)
+- Documented tearing model: aligned scalar reads/writes are atomic on x86/x64; multi-scalar struct reads may tear (matches 1756 behavior)
 
 **Diagnostics**
 - Connection lifecycle callbacks on `ConnectionManager::on_connection_established` / `on_connection_removed`
@@ -557,7 +571,7 @@ The full safety ownership state machine (Propose_TUNID / Apply_TUNID / Configure
 ## Known limitations
 
 - 10 ms RPI runs stably for hours on Linux and tuned Windows hosts. On stock Windows the scheduler tail can occasionally exceed 50 ms — disable NIC green-Ethernet features and pin the producer thread.
-- No persistent storage — assembly contents and tag values are in-memory only.
+- Assembly Object contents are in-memory only (tag values persist via `ethernetip::logix::persistence::save` / `load`).
 - Originator-side connection bridging through multiple hops is not implemented.
 - Safety reset / safety configuration apply services are wired in but not extensively interop-tested.
 

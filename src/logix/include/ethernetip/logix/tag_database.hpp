@@ -2,6 +2,7 @@
 
 #include "ethernetip/logix/tag.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -54,6 +55,16 @@ private:
     uint32_t    definition_size_ = 0;
 };
 
+/// A named tag scope belonging to a Logix program, with its own tag table
+/// and Symbol Object instance-id space. Program tags are addressed as
+/// Program:<name>.<tag>.
+struct ProgramScope {
+    std::string name;
+    uint32_t pseudo_instance = 0;
+    std::unordered_map<std::string, std::unique_ptr<Tag>> tags_by_name_lower;
+    uint32_t next_instance = 1;
+};
+
 /// In-memory tag database for the Logix simulator. Tags indexed by name
 /// (case-insensitive) and by Symbol Object instance ID.
 class TagDatabase {
@@ -67,7 +78,12 @@ public:
     TagDatabase& operator=(const TagDatabase&) = delete;
 
     /// Add an atomic tag. Throws std::invalid_argument on unknown tag type.
+    /// BOOL[] arrays are DWORD-packed and require element_count to be a
+    /// multiple of 32.
     Tag& add_tag(std::string name, uint16_t tag_type, int element_count = 1);
+
+    /// Add a multi-dimensional atomic tag (up to 3 dims).
+    Tag& add_tag_dims(std::string name, uint16_t tag_type, std::vector<uint32_t> dims);
 
     /// Add a structured tag backed by a template.
     Tag& add_tag(std::string name, const TemplateDefinition& tmpl, int element_count = 1);
@@ -82,6 +98,18 @@ public:
 
     [[nodiscard]] int count() const;
 
+    /// Register (or return existing) a named program scope.
+    ProgramScope& register_program(std::string name);
+
+    [[nodiscard]] ProgramScope* find_program(std::string_view name);
+
+    [[nodiscard]] std::vector<ProgramScope*> all_programs();
+
+    /// Add an atomic tag inside a program scope.
+    Tag& add_program_tag(std::string_view program, std::string name, uint16_t tag_type);
+
+    [[nodiscard]] Tag* find_program_tag(std::string_view program, std::string_view name);
+
     /// Define a structure template (UDT) with Logix alignment + BOOL packing.
     ///
     /// Alignment rules (1756-PM020):
@@ -93,9 +121,20 @@ public:
     /// in the Info field (here: TemplateMemberInfo::array_size for BOOLs).
     TemplateDefinition& add_template(std::string name, std::vector<TemplateMember> members);
 
+    /// Register a pre-resolved template layout verbatim (transpiler escape
+    /// hatch for AOI backing structures and STRING). instance_id must be
+    /// non-zero and unique; auto-assign counter bumps past it.
+    TemplateDefinition& add_template_prebuilt(std::unique_ptr<TemplateDefinition> tmpl);
+
     [[nodiscard]] const TemplateDefinition* find_template(uint16_t instance_id) const;
 
     [[nodiscard]] std::vector<const TemplateDefinition*> all_templates() const;
+
+    // --- Gap 8: event suppression + optional dirty tracking ---
+    void set_suppress_events(bool on) { suppress_events_.store(on, std::memory_order_relaxed); }
+    void enable_dirty_tracking() { dirty_tracking_ = true; }
+    void disable_dirty_tracking() { dirty_tracking_ = false; dirty_.clear(); }
+    [[nodiscard]] std::vector<uint32_t> drain_dirty();
 
     void add_tag_added_handler        (TagAddedHandler h)         { tag_added_.push_back(std::move(h)); }
     void add_template_added_handler   (TemplateAddedHandler h)    { template_added_.push_back(std::move(h)); }
@@ -117,9 +156,16 @@ private:
     std::unordered_map<uint16_t, std::unique_ptr<TemplateDefinition>> templates_;
     uint16_t next_template_id_ = 0x100;
 
+    std::unordered_map<std::string, std::unique_ptr<ProgramScope>> programs_lower_;
+    uint32_t next_program_pseudo_ = 0xF000;
+
     std::vector<TagAddedHandler>      tag_added_;
     std::vector<TemplateAddedHandler> template_added_;
     std::vector<AnyTagChangedHandler> any_tag_changed_;
+
+    std::atomic<bool> suppress_events_{false};
+    bool dirty_tracking_ = false;
+    std::vector<uint32_t> dirty_;
 };
 
 } // namespace ethernetip::logix

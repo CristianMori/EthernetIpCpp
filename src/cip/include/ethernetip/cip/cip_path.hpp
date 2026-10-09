@@ -4,9 +4,28 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace ethernetip::cip {
+
+/// Kind of logical segment (matches the low bits of the segment type nibble).
+enum class LogicalKind : uint8_t {
+    ClassId         = 0x00,
+    InstanceId      = 0x04,
+    ConnectionPoint = 0x0C,
+    AttributeId     = 0x10,
+};
+
+/// ANSI Extended Symbolic (0x91) — a tag name or member name.
+struct SymbolicPathSegment { std::string name; };
+/// Logical Element ID (0x28/0x29/0x2A) — one array index.
+struct ElementPathSegment { uint32_t index; };
+/// Any other logical segment.
+struct LogicalPathSegment { LogicalKind kind; uint32_t value; };
+
+/// One segment inside a CIP EPATH, in on-wire order.
+using PathSegment = std::variant<SymbolicPathSegment, ElementPathSegment, LogicalPathSegment>;
 
 /// Parsed CIP EPATH — logical segments (class, instance, attribute,
 /// connection point, element) plus ANSI Extended Symbolic segments and the
@@ -24,6 +43,11 @@ struct CipPath {
 
     /// Raw EPATH bytes for pass-through or re-parsing.
     std::vector<uint8_t> raw_path;
+
+    /// Every parsed segment in on-wire order. Empty when constructed manually
+    /// without going through parse(); the parser populates it so callers can
+    /// distinguish, for example, `Program:X.Tag` from `Motor.Timer.PRE`.
+    std::vector<PathSegment> segments;
 
     /// Parse an EPATH from a byte span.
     /// Returns the parsed path and the number of bytes consumed.

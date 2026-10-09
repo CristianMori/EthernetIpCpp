@@ -6,6 +6,8 @@ add_library(ethernetip_logix STATIC
     src/multi_service_handler.cpp
     src/logix_dispatcher.cpp
     src/tag_client.cpp
+    src/walker.cpp
+    src/persistence.cpp
 )
 add_library(ethernetip::logix ALIAS ethernetip_logix)
 

@@ -137,4 +137,79 @@ CipServiceResponse handle_read_modify_write(Tag& tag, uint8_t service_code,
     return CipServiceResponse::success(service_code);
 }
 
+// --- Walker-aware variants (gaps 2, 5, 6) ---
+
+CipServiceResponse handle_read_tag_at(const Tag& tag, uint8_t service_code,
+                                       std::span<const uint8_t> data,
+                                       const WalkResult& w) {
+    if (data.size() < 2) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+    }
+    uint16_t element_count = ser::read_uint(data);
+
+    if (w.bit_pos.has_value()) {
+        if (element_count != 1) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+        }
+        uint8_t host = tag.get_data(w.offset, 1)[0];
+        uint8_t bit = static_cast<uint8_t>((host >> *w.bit_pos) & 0x01);
+        std::vector<uint8_t> reply(3);
+        ser::write_uint(reply, static_cast<uint16_t>(0x00C1));   // BOOL
+        reply[2] = bit;
+        return CipServiceResponse::success(service_code, std::move(reply));
+    }
+
+    int bytes_to_read = element_count * w.element_size;
+    if (w.offset + bytes_to_read > tag.data_size()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    bool partial = (2 + bytes_to_read) > MaxReplyData;
+    int take = partial ? (MaxReplyData - 2) : bytes_to_read;
+    std::vector<uint8_t> out(2u + static_cast<size_t>(take));
+    ser::write_uint(out, w.type_code);
+    auto src = tag.get_data(w.offset, take);
+    std::copy(src.begin(), src.end(), out.begin() + 2);
+    if (partial) {
+        return CipServiceResponse{
+            static_cast<uint8_t>(service_code | 0x80),
+            CipStatus::error(0x06),
+            std::move(out),
+        };
+    }
+    return CipServiceResponse::success(service_code, std::move(out));
+}
+
+CipServiceResponse handle_write_tag_at(Tag& tag, uint8_t service_code,
+                                        std::span<const uint8_t> data,
+                                        const WalkResult& w) {
+    if (data.size() < 4) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+    }
+    uint16_t tag_type      = ser::read_uint(data);
+    uint16_t element_count = ser::read_uint(data.subspan(2));
+
+    if (tag_type != w.type_code) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2107}));
+    }
+
+    if (w.bit_pos.has_value()) {
+        if (element_count != 1 || data.size() < 5) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+        }
+        bool new_value = (data[4] & 0x01) != 0;
+        tag.atomic_set_bit(w.offset, *w.bit_pos, new_value);
+        return CipServiceResponse::success(service_code);
+    }
+
+    int bytes_to_write = element_count * w.element_size;
+    if (static_cast<int>(data.size()) < 4 + bytes_to_write) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+    }
+    if (w.offset + bytes_to_write > tag.data_size()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    tag.set_data(data.subspan(4, bytes_to_write), w.offset);
+    return CipServiceResponse::success(service_code);
+}
+
 } // namespace ethernetip::logix::tag_services

@@ -42,6 +42,9 @@ private:
     static cip::CipServiceResponse dispatch_tag_service(Tag& tag, uint8_t service_code,
                                                          std::span<const uint8_t> data,
                                                          int element_offset);
+    cip::CipServiceResponse dispatch_via_walker(Tag& tag, uint8_t service_code,
+                                                  std::span<const uint8_t> data,
+                                                  std::span<const cip::PathSegment> post_root);
 
     std::shared_ptr<TagDatabase>     tags_;
     std::unique_ptr<SymbolObject>    symbol_object_;

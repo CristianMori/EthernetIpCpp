@@ -262,18 +262,28 @@ private:
     std::pair<uint8_t, std::vector<uint8_t>>
         send_connected(std::span<const uint8_t> inner_mr);
 
-    /// Helper — .NET-style type → Logix-type lookup for write<T>.
+    /// Helper — C++ scalar type → Logix tag_type mapping for write<T>.
+    ///
+    /// Routes each signed vs unsigned integer width to its own CIP code so
+    /// the server-side tag_type check in Write_Tag matches a tag registered
+    /// as (say) UDINT when the caller writes with a uint32_t. Collapsing
+    /// unsigned types onto their signed counterparts (as the previous
+    /// implementation did) silently cross-wires UDINT-registered tags.
     template <class T>
     [[nodiscard]] static constexpr uint16_t guess_tag_type() {
         using namespace logix_data_types;
-        if constexpr (std::is_same_v<T, bool>)                                              return Bool;
-        else if constexpr (std::is_same_v<T, int8_t>  || std::is_same_v<T, uint8_t>)        return Sint;
-        else if constexpr (std::is_same_v<T, int16_t> || std::is_same_v<T, uint16_t>)       return Int;
-        else if constexpr (std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t>)       return Dint;
-        else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>)       return Lint;
-        else if constexpr (std::is_same_v<T, float>)                                        return Real;
-        else if constexpr (std::is_same_v<T, double>)                                       return Lreal;
-        else                                                                                static_assert(sizeof(T) == 0, "Unsupported type for TagClient::write<T>");
+        if constexpr (std::is_same_v<T, bool>)      return Bool;
+        else if constexpr (std::is_same_v<T, int8_t>)  return Sint;
+        else if constexpr (std::is_same_v<T, uint8_t>) return Usint;
+        else if constexpr (std::is_same_v<T, int16_t>) return Int;
+        else if constexpr (std::is_same_v<T, uint16_t>) return Uint;
+        else if constexpr (std::is_same_v<T, int32_t>) return Dint;
+        else if constexpr (std::is_same_v<T, uint32_t>) return Udint;
+        else if constexpr (std::is_same_v<T, int64_t>) return Lint;
+        else if constexpr (std::is_same_v<T, uint64_t>) return Ulint;
+        else if constexpr (std::is_same_v<T, float>)  return Real;
+        else if constexpr (std::is_same_v<T, double>) return Lreal;
+        else static_assert(sizeof(T) == 0, "Unsupported type for TagClient::write<T>");
     }
 
     void read_exact(uint8_t* dst, size_t n);
