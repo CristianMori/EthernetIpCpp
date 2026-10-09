@@ -64,6 +64,7 @@ This is a C++20 port of [EthernetIPSharp](../EthernetIPSharp). All three ports (
 - `EipScanner::send_generic(service, class, instance, attribute, data, route)` — idiomatic CIP request wrapper with optional `Unconnected_Send` backplane routing
 
 **Logix tag server (Studio-5000-compatible)**
+- Full CIP Vol 1 §C-6.1 elementary type family — `Bool`, signed integers (`Sint`/`Int`/`Dint`/`Lint`), unsigned integers (`Usint`/`Uint`/`Udint`/`Ulint`), floats (`Real`/`Lreal`), and bit strings (`Byte`/`Word`/`Dword`/`Lword`)
 - Program-scoped tags — clients address them as `Program:Cell.Timer1.PRE`; `TagDatabase::register_program` + `add_program_tag` populate a per-program scope with its own instance-id space
 - Nested UDT templates via `add_template` (auto-computes layout) or `add_template_prebuilt(std::unique_ptr<TemplateDefinition>)` — the transpiler escape hatch for L5X exports including AOI backing structures (32-per-DINT BOOL packing) and STRING
 - Segment-aware path walker (`ethernetip::logix::walk`) — a CIP request for `Motor.Timer.PRE`, `Motor.DN`, `Line[2].Speed`, `Matrix[1,2,3]` returns the right bytes and the right type code
