@@ -21,3 +21,7 @@ ethernetip_add_test(test_walker_dispatch
 ethernetip_add_test(test_persistence
     SOURCES test_persistence.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_unsigned_and_bitstring_types
+    SOURCES test_unsigned_and_bitstring_types.cpp
+    LIBS    ethernetip::logix)

@@ -267,9 +267,16 @@ int TagDatabase::type_alignment(uint16_t data_type, int element_size) noexcept {
         case 0xC3: return 2;  // INT
         case 0xC4: return 4;  // DINT
         case 0xC5: return 8;  // LINT
+        case 0xC6: return 1;  // USINT
+        case 0xC7: return 2;  // UINT
+        case 0xC8: return 4;  // UDINT
+        case 0xC9: return 8;  // ULINT
         case 0xCA: return 4;  // REAL
         case 0xCB: return 8;  // LREAL
+        case 0xD1: return 1;  // BYTE
+        case 0xD2: return 2;  // WORD
         case 0xD3: return 4;  // DWORD
+        case 0xD4: return 8;  // LWORD
         default:   return std::min(element_size, 4);
     }
 }
