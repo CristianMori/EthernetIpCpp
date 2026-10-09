@@ -8,6 +8,7 @@ add_library(ethernetip_logix STATIC
     src/tag_client.cpp
     src/walker.cpp
     src/persistence.cpp
+    src/logix_structure_handle.cpp
 )
 add_library(ethernetip::logix ALIAS ethernetip_logix)
 

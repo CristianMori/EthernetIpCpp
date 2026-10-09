@@ -29,3 +29,7 @@ ethernetip_add_test(test_unsigned_and_bitstring_types
 ethernetip_add_test(test_tag_client_unsigned_round_trip
     SOURCES test_tag_client_unsigned_round_trip.cpp
     LIBS    ethernetip::logix ethernetip::device ethernetip::protocol)
+
+ethernetip_add_test(test_logix_structure_handle
+    SOURCES test_logix_structure_handle.cpp
+    LIBS    ethernetip::logix)
