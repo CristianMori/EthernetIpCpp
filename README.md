@@ -1,15 +1,60 @@
 # EthernetIPCpp
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)](#requirements)
+
+<!-- TODO: add a short demo GIF (tag read/write or scanner loopback) here. -->
+
 A complete EtherNet/IP and CIP Safety protocol stack written in C++20. Acts as **adapter** (target / I/O slave), **scanner** (originator / I/O master), or **Logix-compatible tag server / client** — with or without CIP Safety. Tested against real Allen-Bradley ControlLogix and CompactLogix PLCs as well as 1734 distributed safety I/O modules.
 
-The library is split into independent static libraries so you can link only the parts you need: bring in `ethernetip_cip` if you just want a CIP message router, add `ethernetip_device` for I/O assemblies, layer on `ethernetip_safety` if you need a SIL-3-style safety connection, or use `ethernetip_logix` for symbolic tag access against a real PLC.
+The library is split into independent static libraries so you can link only the parts you need: bring in `ethernetip_cip` if you just want a CIP message router, add `ethernetip_device` for I/O assemblies, layer on `ethernetip_safety` if you need a SIL-3-style safety connection, or use `ethernetip_logix` for symbolic tag access against a real PLC. Namespaced aliases for `target_link_libraries` are `ethernetip::cip`, `ethernetip::connections`, `ethernetip::protocol`, `ethernetip::device`, `ethernetip::safety`, and `ethernetip::logix`.
 
-This is a C++20 port of [EthernetIPSharp](../EthernetIPSharp). All three ports (C#, Python, C++) share the same architecture and are wire-compatible.
+This is a C++20 port of [EthernetIpSharp](https://github.com/CristianMori/EthernetIpSharp). All three ports (C#, Python, C++) share the same architecture and are wire-compatible.
+
+---
+
+## Install
+
+CMake FetchContent. Each target publishes its headers with a `BUILD_INTERFACE` include path, which is what the downstream build sees after `FetchContent_MakeAvailable`. Set the two options below to `OFF` before declaring the content: both default to `ON`, and leaving them on fetches GoogleTest and builds the sample programs.
+
+<!-- TODO: cut a GitHub release and point GIT_TAG at that tag. No release tags exist yet; master is the default branch. -->
+
+```cmake
+set(ETHERNETIP_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
+set(ETHERNETIP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+
+include(FetchContent)
+FetchContent_Declare(
+    ethernetipcpp
+    GIT_REPOSITORY https://github.com/CristianMori/EthernetIpCpp.git
+    GIT_TAG        master)
+FetchContent_MakeAvailable(ethernetipcpp)
+
+target_link_libraries(my_app PRIVATE ethernetip::logix)
+```
+
+`ethernetip::logix` is the static library `ethernetip_logix`. It links `ethernetip::device`, `ethernetip::connections`, and `ethernetip::protocol` (and through those, `ethernetip::cip`). Link `ethernetip::safety` instead when you need the CIP Safety adapter or originator. Requirements are CMake 3.20+ and a C++20 compiler; see [Building and testing](#building-and-testing).
+
+## 30-second quickstart
+
+Read and write one DINT on a CompactLogix, or on any controller whose symbol service is hosted on the EtherNet/IP module itself (no backplane route). `192.168.1.96` is a placeholder address. The same calls, plus ControlLogix routing and Class 3 connected messaging, are in [Logix tag client](#logix-tag-client).
+
+```cpp
+#include "ethernetip/logix/tag_client.hpp"
+
+ethernetip::logix::TagClient client("192.168.1.96");
+client.connect();
+int32_t rate = client.read<int32_t>("rate");
+client.write<int32_t>("rate", 1500);
+client.disconnect();
+```
 
 ---
 
 ## Table of contents
 
+- [Install](#install)
+- [30-second quickstart](#30-second-quickstart)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Project layout](#project-layout)
@@ -26,6 +71,7 @@ This is a C++20 port of [EthernetIPSharp](../EthernetIPSharp). All three ports (
 - [CIP services supported](#cip-services-supported)
 - [CIP Safety details](#cip-safety-details)
 - [Known limitations](#known-limitations)
+- [Related projects](#related-projects)
 - [License](#license)
 
 ---
@@ -140,19 +186,18 @@ samples/
   safety_adapter/             CIP Safety adapter — runs against a real PLC or compatible emulator
   echo_module/                Plain EtherNet/IP adapter compatible with Studio 5000 Generic Ethernet Module
   cip_echo_server/            Catch-all CIP server — logs any unhandled request (UCMM or Class 3)
-  scanner_smoke/              Class 1 scanner + UCMM/Class 3 explicit smoke tests
+  scanner_smoke/              Class 1 scanner; also builds connected_explicit_smoke
   tag_client_smoke/           Logix tag reader/writer round-trip tests
   logix_host/                 Stand-alone Logix tag server (pycomm3-compatible)
   safety_scanner_1734/        CIP Safety originator targeting a 1734 safety I/O module
-  safety_scanner_loopback/    Safety scanner ↔ safety adapter loopback test
 
 tests/
-  cip_tests/           CIP path parsing, MR codec, service registration
-  connections_tests/   Forward Open parameter parsing
-  protocol_tests/      Encapsulation, scanner ↔ adapter loopback
-  device_tests/        Assembly + virtual-device wiring
-  logix_tests/         Tag database, read/write, edge cases
-  safety_tests/        CRC check values, frame codec round-trips, segment parser
+  cip/                 CIP path parsing, MR codec, service registration
+  connections/         Forward Open parameter parsing
+  protocol/            Encapsulation, scanner ↔ adapter loopback
+  device/              Assembly + virtual-device wiring
+  logix/               Tag database, read/write, edge cases
+  safety/              CRC check values, frame codec round-trips, segment parser
 ```
 
 ---
@@ -382,7 +427,7 @@ adapter.listen("0.0.0.0", 44818);
 
 ## Samples
 
-Eight runnable executables under `samples/`. Each one has a header comment block listing usage and CLI options.
+Seven sample directories under `samples/`, eleven executables. Each program's header comment lists usage and CLI options.
 
 | Sample | Role | Safety | Brief |
 |---|---|---|---|
@@ -390,15 +435,20 @@ Eight runnable executables under `samples/`. Each one has a header comment block
 | `echo_module` | Target | No | Plain EtherNet/IP adapter compatible with Studio 5000 Generic Ethernet Module |
 | `cip_echo_server` | Target | No | Catch-all CIP server — logs any unhandled request and optionally returns N bytes of incremental data. Handles UCMM + Class 3 from Logix MSG instructions. |
 | `logix_host` | Target | No | Stand-alone Logix tag server with preloaded tags. Compatible with pycomm3. |
-| `scanner_smoke` | Scanner | No | Class 1 I/O scanner + UCMM/Class 3 explicit round-trip smoke tests |
-| `tag_client_smoke` | Client | No | Logix tag reader/writer round-trip tests (browse, atomic, UDT) |
+| `scanner_smoke` | Scanner | No | Class 1 I/O scanner smoke test. The same directory also builds `connected_explicit_smoke` (UCMM and Class 3 connected explicit round-trips). |
+| `tag_client_smoke` | Client | No | Logix tag reader/writer round-trip tests (browse, atomic, UDT). The same directory also builds `plc_write_test` (read / write / restore one DINT), `extensions_smoke` (`read_multiple`, `write_multiple`, program-scope browse, `StructureValue`), and `plc_multi_read` (one round-trip read of several atomic tags). |
 | `safety_scanner_1734` | Scanner | Yes | CIP Safety originator targeting a 1734 safety I/O module |
-| `safety_scanner_loopback` | Scanner | Yes | Self-contained safety scanner ↔ safety adapter loopback test |
 
-Run any sample after building:
+Run any sample after building. Multi-config Visual Studio puts the binary under `Release`:
 
 ```powershell
 build\samples\<name>\Release\<name>.exe [args...]
+```
+
+A single-config Ninja build (the Linux instructions below) writes it next to the sample's `CMakeLists.txt` output dir:
+
+```sh
+./build/samples/<name>/<name> [args...]
 ```
 
 Defaults are set up so `scanner_smoke` can talk to `echo_module` on the same machine (loopback) without any wiring:
@@ -409,6 +459,14 @@ build\samples\echo_module\Release\echo_module.exe
 
 # Terminal 2
 build\samples\scanner_smoke\Release\scanner_smoke.exe 127.0.0.1
+```
+
+```sh
+# Terminal 1
+./build/samples/echo_module/echo_module
+
+# Terminal 2
+./build/samples/scanner_smoke/scanner_smoke 127.0.0.1
 ```
 
 ---
@@ -574,6 +632,18 @@ The full safety ownership state machine (Propose_TUNID / Apply_TUNID / Configure
 - Assembly Object contents are in-memory only (tag values persist via `ethernetip::logix::persistence::save` / `load`).
 - Originator-side connection bridging through multiple hops is not implemented.
 - Safety reset / safety configuration apply services are wired in but not extensively interop-tested.
+
+---
+
+## Related projects
+
+Part of a family of open-source robotics / industrial-automation libraries by @CristianMori:
+
+- **EtherNet/IP + CIP Safety:** [Python](https://github.com/CristianMori/EthernetIpPython) · [C#](https://github.com/CristianMori/EthernetIpSharp) · [Rust](https://github.com/CristianMori/EthernetIpRust) · [C++](https://github.com/CristianMori/EthernetIpCpp)
+- **PLC tooling:** [MoriFixPlc](https://github.com/CristianMori/MoriFixPlc) (portable PLC HAL) · [EscaFlow](https://github.com/CristianMori/Mori.EscaFlow) (PLC transpiler)
+- **ROS in pure C#:** [Mori.RosSharp](https://github.com/CristianMori/Mori.RosSharp) (ROS 1) · [Mori.Ros2Sharp](https://github.com/CristianMori/Mori.Ros2Sharp) (ROS 2)
+- **Simulation & vision:** [GemelliStudio](https://github.com/CristianMori/GemelliStudio) · [LocateAnythingSharp](https://github.com/CristianMori/LocateAnythingSharp) · [Mori.SkyScope](https://github.com/CristianMori/Mori.SkyScope)
+- **AI agents:** [Deckhand](https://github.com/CristianMori/DeckHand)
 
 ---
 
