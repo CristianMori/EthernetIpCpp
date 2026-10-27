@@ -33,3 +33,7 @@ ethernetip_add_test(test_tag_client_unsigned_round_trip
 ethernetip_add_test(test_logix_structure_handle
     SOURCES test_logix_structure_handle.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_struct_wire_prefix
+    SOURCES test_struct_wire_prefix.cpp
+    LIBS    ethernetip::logix)
