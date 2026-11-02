@@ -45,6 +45,22 @@ CipServiceResponse handle(cip::ICipDispatch& dispatch, const CipServiceRequest& 
         offsets[i] = ser::read_uint(request.data.subspan(2u + i * 2u));
     }
 
+    // Validate the whole offset table before touching any sub-request. A
+    // non-monotonic entry makes sub_end - sub_start wrap in the signed int
+    // below; a trailing offset past request.data.size() lets subspan read
+    // off the end. We also require offsets[i] >= table_end so a crafted
+    // table cannot point sub-requests back into the offset array itself.
+    const size_t data_size = request.data.size();
+    const size_t table_end = 2u + static_cast<size_t>(service_count) * 2u;
+    for (uint16_t i = 0; i < service_count; ++i) {
+        if (offsets[i] < table_end || offsets[i] > data_size) {
+            return CipServiceResponse::error(request.service_code, CipStatus::error(0x13));
+        }
+        if (i + 1 < service_count && offsets[i] > offsets[i + 1]) {
+            return CipServiceResponse::error(request.service_code, CipStatus::error(0x13));
+        }
+    }
+
     // Encode each sub-response and stash the bytes.
     std::vector<std::vector<uint8_t>> responses(service_count);
     std::vector<uint8_t> encode_buf(520);
