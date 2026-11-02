@@ -232,4 +232,136 @@ def test_pycomm3_every_atomic_type_round_trips(host_server):
                         "mismatch", {"back": r2.value, "err": r2.error},
                     )
 
+        # ---- Yellow-row coverage -----------------------------------------
+        # Mirrors the sibling Python port's test extension verbatim. Each
+        # failing case records a diagnostic payload so the assertion dump at
+        # the end explains what went wrong on the wire.
+        def _fail(label: str, detail) -> None:
+            failures[label] = ("mismatch", detail)
+
+        # Row 17: 1-D array indexed read/write.
+        r = plc.read("DintArr[5]")
+        if r.error or r.value != 105:
+            _fail("17 DintArr[5] read", {"err": r.error, "val": r.value})
+        w = plc.write(("DintArr[5]", 999))
+        r2 = plc.read("DintArr[5]")
+        if w.error or r2.value != 999:
+            _fail("17 DintArr[5] round-trip", {"w": w.error, "back": r2.value})
+
+        # Row 18: whole array read.
+        r = plc.read("DintArr{10}")
+        if r.error or not r.value or list(r.value)[0] != 100 or list(r.value)[9] != 109:
+            _fail("18 DintArr{10}",
+                   {"err": r.error,
+                    "vals": list(r.value) if r.value else None})
+
+        # Rows 19 + 20: fragmented read + write of 10 elements.
+        w = plc.write(("DintArr{10}", list(range(1000, 1010))))
+        r = plc.read("DintArr{10}")
+        if w.error or not r.value or list(r.value) != list(range(1000, 1010)):
+            _fail("19-20 fragmented r/w",
+                   {"w": w.error,
+                    "back": list(r.value) if r.value else None})
+
+        # Row 21: bit of atomic.
+        r = plc.read("FlagsDint.1")
+        if r.error or bool(r.value) is not True:
+            _fail("21 FlagsDint.1 read", {"err": r.error, "val": r.value})
+        w = plc.write(("FlagsDint.0", True))
+        r2 = plc.read("FlagsDint.0")
+        if w.error or bool(r2.value) is not True:
+            _fail("21 FlagsDint bit write",
+                   {"w": w.error, "back": r2.value})
+
+        # Row 22: BOOL array (DWORD-packed).
+        r = plc.read("Flags32[3]")
+        if r.error:
+            _fail("22 Flags32[3] read", {"err": r.error, "val": r.value})
+        w = plc.write(("Flags32[7]", True))
+        r2 = plc.read("Flags32[7]")
+        if w.error or bool(r2.value) is not True:
+            _fail("22 Flags32 bit write",
+                   {"w": w.error, "back": r2.value})
+
+        # Row 23: multi-dim array.
+        r = plc.read("Matrix[1,2]")
+        if r.error or r.value != 12:
+            _fail("23 Matrix[1,2] read", {"err": r.error, "val": r.value})
+        w = plc.write(("Matrix[0,1]", 777))
+        r2 = plc.read("Matrix[0,1]")
+        if w.error or r2.value != 777:
+            _fail("23 Matrix write",
+                   {"w": w.error, "back": r2.value})
+
+        # Row 24: Logix STRING UDT whole-struct round-trip.
+        r = plc.read("Greeting")
+        if r.error or r.value != "Hello pycomm3":
+            _fail("24 Greeting read", {"err": r.error, "val": r.value})
+        w = plc.write(("Greeting", "written back"))
+        r2 = plc.read("Greeting")
+        if w.error or r2.value != "written back":
+            _fail("24 Greeting round-trip",
+                   {"w": w.error, "back": r2.value})
+
+        # Row 25: STRING array element round-trip.
+        w = plc.write(("GreetingArr[1]", "second"))
+        r = plc.read("GreetingArr[1]")
+        if w.error or r.error or r.value != "second":
+            _fail("25 GreetingArr[1]",
+                   {"w": w.error, "r": r.error, "val": r.value})
+
+        # Row 26: UDT whole-struct read (returns dict).
+        r = plc.read("MotorA")
+        if (r.error or not isinstance(r.value, dict)
+                or abs(r.value.get("Speed", 0) - 3.14) >= 1e-4
+                or r.value.get("Fault") is not True
+                or r.value.get("RunCount") != 42):
+            _fail("26 MotorA whole-struct", {"err": r.error, "val": r.value})
+
+        # Row 27: UDT member access.
+        r = plc.read("MotorA.Speed")
+        if r.error or abs(r.value - 3.14) >= 1e-5:
+            _fail("27 MotorA.Speed", {"err": r.error, "val": r.value})
+        r = plc.read("MotorA.RunCount")
+        if r.error or r.value != 42:
+            _fail("27 MotorA.RunCount", {"err": r.error, "val": r.value})
+        w = plc.write(("MotorA.Speed", -1.5))
+        r2 = plc.read("MotorA.Speed")
+        if w.error or abs(r2.value - (-1.5)) >= 1e-5:
+            _fail("27 MotorA.Speed write",
+                   {"w": w.error, "back": r2.value})
+
+        # Row 29: BOOL member of UDT.
+        r = plc.read("MotorA.Fault")
+        if r.error or bool(r.value) is not True:
+            _fail("29 MotorA.Fault read", {"err": r.error, "val": r.value})
+        w = plc.write(("MotorA.Fault", False))
+        r2 = plc.read("MotorA.Fault")
+        if w.error or bool(r2.value) is not False:
+            _fail("29 MotorA.Fault write",
+                   {"w": w.error, "back": r2.value})
+
+        # Row 31: array of UDTs with member access.
+        w = plc.write(("MotorArr[1].Speed", 7.77))
+        r = plc.read("MotorArr[1].Speed")
+        if w.error or r.error or abs(r.value - 7.77) >= 1e-4:
+            _fail("31 MotorArr[1].Speed",
+                   {"w": w.error, "r": r.error, "val": r.value})
+
+        # Rows 39-40: multi-service batch read & write.
+        batch = plc.read("DintArr[0]", "DintArr[1]", "DintArr[2]")
+        if (any(t.error for t in batch)
+                or [t.value for t in batch] != [1000, 1001, 1002]):
+            _fail("39 batch read",
+                   [(t.tag, t.value, t.error) for t in batch])
+        res = plc.write(("DintArr[0]", 5000),
+                         ("DintArr[1]", 5001),
+                         ("DintArr[2]", 5002))
+        r = plc.read("DintArr[0]", "DintArr[1]", "DintArr[2]")
+        if (any(t.error for t in res)
+                or [t.value for t in r] != [5000, 5001, 5002]):
+            _fail("40 batch write",
+                   {"res_errs": [t.error for t in res],
+                    "back": [t.value for t in r]})
+
     assert not failures, f"pycomm3 round-trip failures:\n{failures}"
