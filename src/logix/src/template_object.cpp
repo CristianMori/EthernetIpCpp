@@ -68,21 +68,44 @@ CipServiceResponse TemplateObject::handle_get_attribute_list(
         return CipServiceResponse::error(req.service_code, CipStatus::error(0x1C));
     }
 
-    std::vector<uint8_t> buf(512);
-    int offset = 0;
+    // attr_count is UINT16 from the request; each iteration writes at least
+    // 4 bytes (attr_id + status) plus the attribute's own data on a hit. A
+    // crafted request with large attr_count and real attribute IDs overran
+    // the fixed 512-byte buffer -- write_le does an unchecked memcpy so the
+    // overflow landed in whatever lived next to this heap allocation.
+    //
+    // Bounds-check every write up front; on overflow return Not Enough Memory
+    // Resource (0x02 / 0x2010) so the client sees that the reply was refused
+    // rather than silently truncated.
+    constexpr size_t kBufCap = 512;
+    std::vector<uint8_t> buf(kBufCap);
+    size_t offset = 0;
+    if (offset + 2 > kBufCap) {
+        return CipServiceResponse::error(req.service_code, CipStatus::error(0x02, {0x2010}));
+    }
     ser::write_uint(buf, attr_count);
     offset += 2;
     for (uint16_t i = 0; i < attr_count; ++i) {
         uint16_t attr_id = ser::read_uint(req.data.subspan(2u + i * 2u));
+        if (offset + 2 > kBufCap) {
+            return CipServiceResponse::error(req.service_code, CipStatus::error(0x02, {0x2010}));
+        }
         ser::write_uint(std::span<uint8_t>(buf).subspan(offset), attr_id);
         offset += 2;
 
         auto* attr = inst.get_attribute(attr_id);
         if (attr != nullptr) {
+            size_t attr_len = attr->data_length();
+            if (offset + 2 + attr_len > kBufCap) {
+                return CipServiceResponse::error(req.service_code, CipStatus::error(0x02, {0x2010}));
+            }
             ser::write_uint(std::span<uint8_t>(buf).subspan(offset), 0u);
             offset += 2;
-            offset += attr->encode_to(std::span<uint8_t>(buf).subspan(offset));
+            offset += static_cast<size_t>(attr->encode_to(std::span<uint8_t>(buf).subspan(offset)));
         } else {
+            if (offset + 2 > kBufCap) {
+                return CipServiceResponse::error(req.service_code, CipStatus::error(0x02, {0x2010}));
+            }
             ser::write_uint(std::span<uint8_t>(buf).subspan(offset), 0x0014u);
             offset += 2;
         }
