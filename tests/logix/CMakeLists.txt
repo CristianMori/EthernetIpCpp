@@ -37,3 +37,7 @@ ethernetip_add_test(test_logix_structure_handle
 ethernetip_add_test(test_short_string
     SOURCES test_short_string.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_fragmented_element_offset
+    SOURCES test_fragmented_element_offset.cpp
+    LIBS    ethernetip::logix)

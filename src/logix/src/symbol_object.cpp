@@ -91,13 +91,15 @@ CipServiceResponse SymbolObject::handle_instance_write_tag(CipInstance& inst, co
 CipServiceResponse SymbolObject::handle_instance_read_tag_fragmented(CipInstance& inst, const CipServiceRequest& req) {
     auto* tag = tag_from_instance(inst);
     if (tag == nullptr) return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
-    return tag_services::handle_read_tag_fragmented(*tag, req.service_code, req.data);
+    int elem = static_cast<int>(req.path.element_id.value_or(0));
+    return tag_services::handle_read_tag_fragmented(*tag, req.service_code, req.data, elem);
 }
 
 CipServiceResponse SymbolObject::handle_instance_write_tag_fragmented(CipInstance& inst, const CipServiceRequest& req) {
     auto* tag = tag_from_instance(inst);
     if (tag == nullptr) return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
-    return tag_services::handle_write_tag_fragmented(*tag, req.service_code, req.data);
+    int elem = static_cast<int>(req.path.element_id.value_or(0));
+    return tag_services::handle_write_tag_fragmented(*tag, req.service_code, req.data, elem);
 }
 
 CipServiceResponse SymbolObject::handle_instance_read_modify_write(CipInstance& inst, const CipServiceRequest& req) {
