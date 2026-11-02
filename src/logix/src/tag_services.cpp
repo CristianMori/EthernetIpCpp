@@ -230,7 +230,16 @@ CipServiceResponse handle_write_tag_fragmented(Tag& tag, uint8_t service_code,
     int base_offset = element_offset * tag.element_size();
     int total_bytes = element_count * tag.element_size();
     int write_len   = static_cast<int>(data.size()) - header_len;
-    if (byte_offset_in_elements + static_cast<uint32_t>(write_len) > static_cast<uint32_t>(total_bytes)) {
+    if (write_len < 0 || total_bytes < 0) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+    }
+    // uint32 sum wraps: byte_offset_in_elements near UINT32_MAX plus a small
+    // write_len rolls over to a small value that passes the comparison but
+    // then absolute_offset below walks off the end of the tag buffer. Compare
+    // in uint64 so no wrap can hide here.
+    uint64_t end_in_bytes = static_cast<uint64_t>(byte_offset_in_elements)
+                            + static_cast<uint64_t>(static_cast<uint32_t>(write_len));
+    if (end_in_bytes > static_cast<uint64_t>(total_bytes)) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2104}));
     }
     if (base_offset + static_cast<int>(byte_offset_in_elements) + write_len > tag.data_size()) {
