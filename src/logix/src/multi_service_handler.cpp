@@ -10,7 +10,27 @@ using cip::CipServiceResponse;
 using cip::CipStatus;
 namespace ser = cip::serializer;
 
+namespace {
+// Real clients never nest Multiple_Service_Packet; a hostile client that does
+// can keep each MSP's offset table modest while still blowing the C stack
+// through the dispatch call chain. Three levels is slack for pathological
+// legitimate traffic.
+constexpr int kMaxDepth = 3;
+thread_local int g_depth = 0;
+
+struct DepthGuard {
+    DepthGuard()  { ++g_depth; }
+    ~DepthGuard() { --g_depth; }
+};
+} // namespace
+
 CipServiceResponse handle(cip::ICipDispatch& dispatch, const CipServiceRequest& request) {
+    if (g_depth >= kMaxDepth) {
+        return CipServiceResponse::error(request.service_code,
+                                          CipStatus::error(CipStatus::ServiceNotSupported));
+    }
+    DepthGuard depth_guard;
+
     if (request.data.size() < 2) {
         return CipServiceResponse::error(request.service_code, CipStatus::error(0x13));
     }
