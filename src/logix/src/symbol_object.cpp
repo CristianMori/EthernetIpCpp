@@ -133,10 +133,16 @@ CipServiceResponse SymbolObject::handle_get_instance_attribute_list(
 
     uint32_t start_instance = req.path.instance_id.value_or(0);
 
-    // All tags with instance ID > start, sorted ascending.
+    // All tags with instance ID >= start, sorted ascending.
+    //
+    // pycomm3 (and Studio 5000) resumes pagination by sending
+    // instance_id = last_seen + 1 and expects THAT instance to be the first
+    // one in the next page. Filtering with `> start_instance` drops the
+    // exact tag the client asked for; use >= here. Benign at start=0 because
+    // our tag instance IDs begin at 1.
     auto tags = tags_.all_tags();
     tags.erase(std::remove_if(tags.begin(), tags.end(),
-        [start_instance](Tag* t) { return t->instance_id() <= start_instance; }),
+        [start_instance](Tag* t) { return t->instance_id() < start_instance; }),
         tags.end());
     std::sort(tags.begin(), tags.end(),
         [](Tag* a, Tag* b) { return a->instance_id() < b->instance_id(); });
