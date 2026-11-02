@@ -20,14 +20,25 @@ TemplateDefinition::TemplateDefinition(uint16_t instance_id, std::string name,
       structure_handle_(structure_handle),
       structure_size_(structure_size),
       members_(std::move(members)) {
-    // definition_size = (member_count*8 + name_bytes (null-terminated) + padding) / 4 + 6 header words
-    int name_bytes = static_cast<int>(name_.size()) + 1;
+    // Attribute 4 (object_definition_size, in 32-bit words). pycomm3 (and
+    // Studio 5000) compute the Template_Read body size as `(def_size*4) - 21`,
+    // treating 21 bytes as a header that lives inside the "definition" count
+    // but is not part of the body returned via service 0x4C. Size attr 4 so
+    // `(def_size*4) - 21` is ≥ the member-data length we actually emit —
+    // which includes the Logix ";0" suffix on the template name.
+    constexpr int kDefinitionHeaderBytes = 21;
+    constexpr int kNameSuffixBytes       = 2;   // ";0" appended to template name
+    int name_bytes = static_cast<int>(name_.size()) + kNameSuffixBytes + 1;
     for (const auto& m : members_) {
         name_bytes += static_cast<int>(m.name.size()) + 1;
     }
-    int total_bytes = static_cast<int>(members_.size()) * 8 + name_bytes;
-    total_bytes = (total_bytes + 3) / 4 * 4;
-    definition_size_ = static_cast<uint32_t>(total_bytes / 4) + 6;
+    int member_data_bytes = static_cast<int>(members_.size()) * 8 + name_bytes;
+    // Match the 4-byte padding build_template_definition applies to the
+    // emitted blob — otherwise pycomm3 asks for `def_size*4 - 21` bytes but
+    // the server emits a few more and never signals SUCCESS, looping forever.
+    member_data_bytes = (member_data_bytes + 3) / 4 * 4;
+    definition_size_ = static_cast<uint32_t>(
+        (kDefinitionHeaderBytes + member_data_bytes + 3) / 4);
 }
 
 // ---- TagDatabase: tags ----
