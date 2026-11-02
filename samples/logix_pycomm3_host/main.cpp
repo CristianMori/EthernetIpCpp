@@ -229,6 +229,39 @@ int main(int argc, char** argv) {
         }
         my_aoi.set_data(buf);
     }
+
+    // Program-scoped tags: pycomm3 enumerates them under the "Program:<name>."
+    // prefix and reads/writes them via that prefix. Register a program,
+    // a scalar inside it, and a UDT inside it with the same Motor shape so
+    // we exercise member access too. Names and seed values mirror the
+    // sibling Python port's fixture.
+    tags->register_program("MainProgram");
+    {
+        auto& p_dint = tags->add_program_tag("MainProgram", "LocalDint", ldt::Dint);
+        int32_t v = 42;
+        std::vector<uint8_t> bytes(sizeof(v));
+        std::memcpy(bytes.data(), &v, sizeof(v));
+        p_dint.set_data(bytes);
+    }
+    {
+        auto& p_real = tags->add_program_tag("MainProgram", "LocalReal", ldt::Real);
+        float v = 3.14f;
+        std::vector<uint8_t> bytes(sizeof(v));
+        std::memcpy(bytes.data(), &v, sizeof(v));
+        p_real.set_data(bytes);
+    }
+    {
+        auto& p_motor = tags->add_program_struct_tag("MainProgram", "LocalMotor", motor_tpl);
+        std::vector<uint8_t> buf(motor_tpl.structure_size(), 0);
+        float speed = 2.5f;
+        int32_t run_count = 99;
+        for (const auto& m : motor_tpl.members()) {
+            if      (m.name == "Speed")    std::memcpy(buf.data() + m.offset, &speed, 4);
+            else if (m.name == "Fault")    buf[m.offset] = 1;  // bit 0 True
+            else if (m.name == "RunCount") std::memcpy(buf.data() + m.offset, &run_count, 4);
+        }
+        p_motor.set_data(buf);
+    }
     // -------------------------------------------------------------------------
 
     ethernetip::logix::LogixDispatcher dispatcher(tags, identity);

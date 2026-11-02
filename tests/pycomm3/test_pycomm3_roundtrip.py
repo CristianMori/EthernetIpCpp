@@ -175,7 +175,7 @@ def test_pycomm3_every_atomic_type_round_trips(host_server):
 
     with LogixDriver(f"127.0.0.1:{port}",
                      init_tags=True,
-                     init_program_tags=False) as plc:
+                     init_program_tags=True) as plc:
         tag_names = sorted(plc.tags.keys())
         expected_names = {t[0] for t in TYPES} | {"TestShortString"}
         missing = expected_names - set(tag_names)
@@ -386,6 +386,50 @@ def test_pycomm3_every_atomic_type_round_trips(host_server):
         if w.error or bool(r.value) is not False:
             _fail("AOI MyAOI.Enable write",
                    {"w": w.error, "back": r.value})
+
+        # Program-scoped tags. pycomm3 enumerates them with
+        # init_program_tags=True and reads/writes them under the
+        # "Program:<name>." prefix. Covers:
+        #   * atomic read + write
+        #   * UDT whole-struct read (returns dict)
+        #   * UDT member read + write
+        #   * BOOL member in a program-scoped UDT
+        r = plc.read("Program:MainProgram.LocalDint")
+        if r.error or r.value != 42:
+            _fail("program atomic read", {"err": r.error, "val": r.value})
+        w = plc.write(("Program:MainProgram.LocalDint", 100))
+        r = plc.read("Program:MainProgram.LocalDint")
+        if w.error or r.value != 100:
+            _fail("program atomic write",
+                   {"w": w.error, "back": r.value})
+        r = plc.read("Program:MainProgram.LocalReal")
+        if r.error or abs(r.value - 3.14) >= 1e-5:
+            _fail("program REAL read",
+                   {"err": r.error, "val": r.value})
+        r = plc.read("Program:MainProgram.LocalMotor")
+        if (r.error or not isinstance(r.value, dict)
+                or abs(r.value.get("Speed", 0) - 2.5) >= 1e-5
+                or r.value.get("Fault") is not True
+                or r.value.get("RunCount") != 99):
+            _fail("program UDT whole-struct",
+                   {"err": r.error, "val": r.value})
+        r = plc.read("Program:MainProgram.LocalMotor.Speed")
+        if r.error or abs(r.value - 2.5) >= 1e-5:
+            _fail("program UDT member read",
+                   {"err": r.error, "val": r.value})
+        w = plc.write(("Program:MainProgram.LocalMotor.Speed", 5.5))
+        r = plc.read("Program:MainProgram.LocalMotor.Speed")
+        if w.error or abs(r.value - 5.5) >= 1e-5:
+            _fail("program UDT member write",
+                   {"w": w.error, "back": r.value})
+        r = plc.read("Program:MainProgram.LocalMotor.Fault")
+        if r.error or bool(r.value) is not True:
+            _fail("program UDT BOOL member",
+                   {"err": r.error, "val": r.value})
+        # pycomm3 also populates plc.info['programs'] with discovered programs.
+        if "MainProgram" not in plc.info.get("programs", {}):
+            _fail("program listed in plc.info",
+                   plc.info.get("programs"))
 
         # Rows 39-40: multi-service batch read & write.
         batch = plc.read("DintArr[0]", "DintArr[1]", "DintArr[2]")
