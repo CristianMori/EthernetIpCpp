@@ -40,7 +40,15 @@ SymbolObject::SymbolObject(TagDatabase& tags) : tags_(tags) {
         tag_services::ReadModifyWrite, "Read_Modify_Write",
         [this](CipInstance& i, const CipServiceRequest& r) { return handle_instance_read_modify_write(i, r); }});
 
+    // Register Get_Instance_Attribute_List (0x55) at BOTH class and instance
+    // level: pycomm3 and Studio 5000 continue pagination by sending the
+    // service with instance_id = last_seen + 1, which routes as an
+    // instance-level call.  The handler itself uses request.path.instance_id
+    // as the start cursor, so the same handler is correct in both places.
     cip_class_view_->add_class_service(CipServiceDefinition{
+        GetInstanceAttributeList, "Get_Instance_Attribute_List",
+        [this](CipInstance& i, const CipServiceRequest& r) { return handle_get_instance_attribute_list(i, r); }});
+    cip_class_view_->add_instance_service(CipServiceDefinition{
         GetInstanceAttributeList, "Get_Instance_Attribute_List",
         [this](CipInstance& i, const CipServiceRequest& r) { return handle_get_instance_attribute_list(i, r); }});
 }
