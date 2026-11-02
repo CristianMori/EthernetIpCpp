@@ -125,8 +125,17 @@ CipServiceResponse TemplateObject::handle_template_read(
 }
 
 std::vector<uint8_t> TemplateObject::build_template_definition(const TemplateDefinition& tmpl) {
+    // Template name follows the Logix "<Name>;<crc>" convention — pycomm3
+    // and Studio 5000 both split on ';' to recover the base name. Without
+    // the ';' the template name is swallowed into the member-name list and
+    // the whole parse unwinds, so Motor { Speed:REAL, Fault:BOOL, RunCount:DINT }
+    // ends up decoded as if Speed were a SINT, etc. "0" is a placeholder
+    // CRC matching Logix exports that carry a zero CRC.
+    constexpr const char kNameSuffix[] = ";0";
+    constexpr int kNameSuffixLen = sizeof(kNameSuffix) - 1;
+
     int member_info_bytes = tmpl.member_count() * 8;
-    int name_bytes = static_cast<int>(tmpl.name().size()) + 1;
+    int name_bytes = static_cast<int>(tmpl.name().size()) + kNameSuffixLen + 1;
     for (const auto& m : tmpl.members()) name_bytes += static_cast<int>(m.name.size()) + 1;
 
     int total = member_info_bytes + name_bytes;
@@ -146,6 +155,8 @@ std::vector<uint8_t> TemplateObject::build_template_definition(const TemplateDef
 
     std::memcpy(data.data() + offset, tmpl.name().data(), tmpl.name().size());
     offset += static_cast<int>(tmpl.name().size());
+    std::memcpy(data.data() + offset, kNameSuffix, kNameSuffixLen);
+    offset += kNameSuffixLen;
     data[offset++] = 0;
 
     for (const auto& m : tmpl.members()) {
