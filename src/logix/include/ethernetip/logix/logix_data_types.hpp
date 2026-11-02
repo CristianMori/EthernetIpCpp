@@ -36,6 +36,20 @@ inline constexpr uint16_t Word  = 0x00D2;  ///< 16-bit bit string, 2 bytes
 inline constexpr uint16_t Dword = 0x00D3;  ///< 32-bit bit string, 4 bytes
 inline constexpr uint16_t Lword = 0x00D4;  ///< 64-bit bit string, 8 bytes
 
+/// SHORT_STRING — CIP atomic string (Vol 1 §C-6.3): one USINT length byte
+/// followed by ASCII characters. Distinct from the predefined Logix STRING
+/// UDT (structure: LEN:DINT + DATA:SINT[82]) and from CIP STRING (0xD0,
+/// UINT length). Logix controllers do not expose application tags as
+/// SHORT_STRING, but a Logix-shaped symbol service can — Identity attribute
+/// 7 (Product Name) is the typical place SHORT_STRING appears.
+inline constexpr uint16_t ShortString = 0x00DA;
+
+/// Max character count for a SHORT_STRING tag in this server.
+inline constexpr int ShortStringMaxLength = 80;
+
+/// SHORT_STRING storage size: 1 length byte + ShortStringMaxLength chars.
+inline constexpr int ShortStringStorageSize = 1 + ShortStringMaxLength;
+
 // --- Logix STRING structure layout ---
 inline constexpr int StringStructureSize = 88;
 inline constexpr int StringLenOffset     = 0;
@@ -65,6 +79,7 @@ inline constexpr int StringMaxLength     = 82;
         case 0xD2: return 2;  // WORD
         case 0xD3: return 4;  // DWORD
         case 0xD4: return 8;  // LWORD
+        case 0xDA: return ShortStringStorageSize; // SHORT_STRING (1 len + ShortStringMaxLength chars)
         default:   return -1;
     }
 }
