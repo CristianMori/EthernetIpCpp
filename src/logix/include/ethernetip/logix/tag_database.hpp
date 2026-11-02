@@ -108,6 +108,13 @@ public:
     /// Add an atomic tag inside a program scope.
     Tag& add_program_tag(std::string_view program, std::string name, uint16_t tag_type);
 
+    /// Add a structured tag inside a program scope. Mirrors ``add_tag`` for
+    /// template-backed tags but places the tag in the per-program table so
+    /// it answers to ``Program:<prog>.<name>`` instead of controller scope.
+    Tag& add_program_struct_tag(std::string_view program, std::string name,
+                                 const TemplateDefinition& tmpl,
+                                 int element_count = 1);
+
     [[nodiscard]] Tag* find_program_tag(std::string_view program, std::string_view name);
 
     /// Define a structure template (UDT) with Logix alignment + BOOL packing.

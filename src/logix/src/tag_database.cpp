@@ -212,6 +212,35 @@ Tag& TagDatabase::add_program_tag(std::string_view program, std::string name, ui
     return ref;
 }
 
+Tag& TagDatabase::add_program_struct_tag(std::string_view program, std::string name,
+                                           const TemplateDefinition& tmpl,
+                                           int element_count) {
+    int array_dims = element_count > 1 ? 1 : 0;
+    uint16_t symbol_type = ldt::make_struct_symbol_type(tmpl.instance_id(), array_dims);
+    std::vector<uint32_t> dims;
+    if (element_count > 1) dims.push_back(static_cast<uint32_t>(element_count));
+    std::string pkey = lower(program);
+    std::string nkey = lower(name);
+    std::scoped_lock lock(mu_);
+    auto pit = programs_lower_.find(pkey);
+    if (pit == programs_lower_.end()) {
+        throw std::invalid_argument("Program not registered");
+    }
+    ProgramScope& scope = *pit->second;
+    if (scope.tags_by_name_lower.find(nkey) != scope.tags_by_name_lower.end()) {
+        throw std::invalid_argument("Tag already exists in program");
+    }
+    uint32_t inst = scope.next_instance++;
+    auto tag = std::make_unique<Tag>(inst, std::move(name), symbol_type,
+                                      tmpl.structure_handle(),
+                                      static_cast<int>(tmpl.structure_size()),
+                                      std::move(dims));
+    tag->set_template(&tmpl);
+    Tag& ref = *tag;
+    scope.tags_by_name_lower[std::move(nkey)] = std::move(tag);
+    return ref;
+}
+
 Tag* TagDatabase::find_program_tag(std::string_view program, std::string_view name) {
     std::string pkey = lower(program);
     std::string nkey = lower(name);
