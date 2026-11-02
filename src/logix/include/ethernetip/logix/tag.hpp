@@ -91,6 +91,11 @@ public:
 
     [[nodiscard]] std::span<const uint8_t> get_data() const noexcept { return data_; }
     [[nodiscard]] std::span<const uint8_t> get_data(int byte_offset, int length) const {
+        // Defense in depth: upstream services clamp into range before calling,
+        // but a bogus negative offset from a protocol bug upstairs would turn
+        // into a huge size_t inside subspan() and read past the buffer.
+        if (byte_offset < 0 || length < 0) return {};
+        if (static_cast<size_t>(byte_offset) + static_cast<size_t>(length) > data_.size()) return {};
         return std::span<const uint8_t>(data_).subspan(byte_offset, length);
     }
 
@@ -120,8 +125,13 @@ public:
 
     /// Bulk write into the tag's data buffer. Fires value_changed once.
     void set_data(std::span<const uint8_t> source, int byte_offset = 0) {
+        // Defense in depth: a negative byte_offset from a protocol bug upstairs
+        // would walk data_.data() backwards into neighbouring heap. Upstream
+        // services check this already, but we check again here.
+        if (byte_offset < 0) return;
         int len = static_cast<int>(source.size());
         int max = static_cast<int>(data_.size()) - byte_offset;
+        if (max < 0) return;
         if (len > max) len = max;
         if (len > 0) {
             std::memcpy(data_.data() + byte_offset, source.data(),
@@ -132,8 +142,10 @@ public:
 
     /// Silent bulk write. See write_silent.
     void set_data_silent(std::span<const uint8_t> source, int byte_offset = 0) {
+        if (byte_offset < 0) return;
         int len = static_cast<int>(source.size());
         int max = static_cast<int>(data_.size()) - byte_offset;
+        if (max < 0) return;
         if (len > max) len = max;
         if (len > 0) {
             std::memcpy(data_.data() + byte_offset, source.data(),

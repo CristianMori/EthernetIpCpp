@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace ethernetip::logix {
@@ -82,9 +83,20 @@ Tag* SymbolObject::tag_from_instance(CipInstance& inst) {
     return tags_.find_by_instance_id(inst.instance_id());
 }
 
+// element_id is a UINT32 on the wire; Tag offsets are int. Reject anything
+// that would wrap to a negative offset BEFORE handing the tag over, so a
+// crafted path can't walk Tag::data_ backwards into neighbouring heap.
+static bool element_id_fits_int32(const CipServiceRequest& req) {
+    uint32_t raw = req.path.element_id.value_or(0);
+    return raw <= static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+}
+
 CipServiceResponse SymbolObject::handle_instance_read_tag(CipInstance& inst, const CipServiceRequest& req) {
     auto* tag = tag_from_instance(inst);
     if (tag == nullptr) return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
+    if (!element_id_fits_int32(req)) {
+        return CipServiceResponse::error(req.service_code, CipStatus::error(0xFF, {0x2105}));
+    }
     int elem = static_cast<int>(req.path.element_id.value_or(0));
     return tag_services::handle_read_tag(*tag, req.service_code, req.data, elem);
 }
@@ -92,6 +104,9 @@ CipServiceResponse SymbolObject::handle_instance_read_tag(CipInstance& inst, con
 CipServiceResponse SymbolObject::handle_instance_write_tag(CipInstance& inst, const CipServiceRequest& req) {
     auto* tag = tag_from_instance(inst);
     if (tag == nullptr) return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
+    if (!element_id_fits_int32(req)) {
+        return CipServiceResponse::error(req.service_code, CipStatus::error(0xFF, {0x2105}));
+    }
     int elem = static_cast<int>(req.path.element_id.value_or(0));
     return tag_services::handle_write_tag(*tag, req.service_code, req.data, elem);
 }
@@ -99,6 +114,9 @@ CipServiceResponse SymbolObject::handle_instance_write_tag(CipInstance& inst, co
 CipServiceResponse SymbolObject::handle_instance_read_tag_fragmented(CipInstance& inst, const CipServiceRequest& req) {
     auto* tag = tag_from_instance(inst);
     if (tag == nullptr) return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
+    if (!element_id_fits_int32(req)) {
+        return CipServiceResponse::error(req.service_code, CipStatus::error(0xFF, {0x2105}));
+    }
     int elem = static_cast<int>(req.path.element_id.value_or(0));
     return tag_services::handle_read_tag_fragmented(*tag, req.service_code, req.data, elem);
 }
@@ -106,6 +124,9 @@ CipServiceResponse SymbolObject::handle_instance_read_tag_fragmented(CipInstance
 CipServiceResponse SymbolObject::handle_instance_write_tag_fragmented(CipInstance& inst, const CipServiceRequest& req) {
     auto* tag = tag_from_instance(inst);
     if (tag == nullptr) return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
+    if (!element_id_fits_int32(req)) {
+        return CipServiceResponse::error(req.service_code, CipStatus::error(0xFF, {0x2105}));
+    }
     int elem = static_cast<int>(req.path.element_id.value_or(0));
     return tag_services::handle_write_tag_fragmented(*tag, req.service_code, req.data, elem);
 }

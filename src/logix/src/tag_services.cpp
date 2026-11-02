@@ -77,6 +77,13 @@ CipServiceResponse handle_read_tag(const Tag& tag, uint8_t service_code,
     uint16_t element_count = ser::read_uint(data);
     int byte_offset   = element_offset * tag.element_size();
     int bytes_to_read = element_count * tag.element_size();
+    // Defense in depth: upstream rejects element_id > INT32_MAX, but a negative
+    // byte_offset here would slip past the upper-bound check below (negative +
+    // small > data_size is false) and then subspan into the tag buffer with a
+    // huge size_t.
+    if (byte_offset < 0 || bytes_to_read < 0) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
     if (byte_offset + bytes_to_read > tag.data_size()) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
     }
@@ -120,6 +127,13 @@ CipServiceResponse handle_write_tag(Tag& tag, uint8_t service_code,
 
     int byte_offset    = element_offset * tag.element_size();
     int bytes_to_write = element_count * tag.element_size();
+
+    // Defense in depth: upstream rejects element_id > INT32_MAX, but a negative
+    // byte_offset would turn Tag::set_data into a backwards memcpy if the
+    // dispatcher's cast ever truncated.
+    if (byte_offset < 0 || bytes_to_write < 0) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
 
     // pycomm3 writes SHORT_STRING as [length_byte][chars] with no fixed-slot
     // padding, so the payload is 1 + N bytes rather than the full 81-byte

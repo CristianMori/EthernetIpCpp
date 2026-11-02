@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <limits>
 #include <variant>
 
 namespace ethernetip::logix {
@@ -226,7 +227,16 @@ CipServiceResponse LogixDispatcher::on_unhandled(uint8_t service_code,
             std::scoped_lock lock(symbol_cache_mu_);
             symbol_cache_[std::move(key)] = tag;
         }
-        int elem = static_cast<int>(path.element_id.value_or(0));
+        uint32_t raw_elem = path.element_id.value_or(0);
+        // element_id is a UINT32 on the wire but Tag::get_data / set_data use
+        // int offsets internally. A value > INT32_MAX would wrap to a negative
+        // offset and walk the tag buffer backwards into neighbouring heap on
+        // Read_Tag / Write_Tag. Fail the request with Invalid Member ID
+        // (0xFF 0x2105) before we ever touch the tag.
+        if (raw_elem > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+        }
+        int elem = static_cast<int>(raw_elem);
         return dispatch_tag_service(*tag, service_code, data, elem);
     }
     return cip::CipDispatcher::on_unhandled(service_code, path, data, default_status);
