@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 namespace ldt = ethernetip::logix::logix_data_types;
@@ -112,6 +113,77 @@ int main(int argc, char** argv) {
     // SHORT_STRING — pycomm3 writes a variable-length [len][chars] payload,
     // which tag_services.cpp accepts since commit a89cb55.
     tags->add_tag("TestShortString", ldt::ShortString);
+
+    // ---- Yellow-row coverage ------------------------------------------------
+    // Mirrors the sibling Python port's test_pycomm3_roundtrip._spawn_server
+    // extension. Names and seed values must match verbatim.
+    using ethernetip::logix::TemplateMember;
+
+    // Row 17-20: 1-D array of atomics (DINT[10]) seeded 100..109.
+    {
+        auto& arr = tags->add_tag("DintArr", ldt::Dint, 10);
+        std::vector<uint8_t> bytes(10 * 4);
+        for (int i = 0; i < 10; ++i) {
+            int32_t v = 100 + i;
+            std::memcpy(bytes.data() + i * 4, &v, 4);
+        }
+        arr.set_data(bytes);
+    }
+
+    // Row 21: bit of atomic (DINT with alternating bit pattern).
+    seed_scalar<uint32_t>(tags->add_tag("FlagsDint", ldt::Dint),
+                           uint32_t{0b1010'1010'1010'1010});
+
+    // Row 22: BOOL[32] (DWORD-packed).
+    tags->add_tag("Flags32", ldt::Bool, 32);
+
+    // Row 23: multi-dim DINT[2,3], row-major values 10*r+c.
+    {
+        auto& mat = tags->add_tag_dims("Matrix", ldt::Dint, {2, 3});
+        std::vector<uint8_t> bytes(2 * 3 * 4);
+        for (int r = 0; r < 2; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                int32_t v = 10 * r + c;
+                std::memcpy(bytes.data() + (r * 3 + c) * 4, &v, 4);
+            }
+        }
+        mat.set_data(bytes);
+    }
+
+    // Row 24-25: Logix STRING UDT (LEN:DINT + DATA:SINT[82], 88 bytes).
+    auto& string_tpl = tags->add_template("STRING", {
+        TemplateMember{"LEN",  ldt::Dint, 0},
+        TemplateMember{"DATA", ldt::Sint, 82},
+    });
+    {
+        auto& greet = tags->add_tag("Greeting", string_tpl);
+        std::vector<uint8_t> buf(string_tpl.structure_size(), 0);
+        const char hello[] = "Hello pycomm3";
+        int32_t len = static_cast<int32_t>(sizeof(hello) - 1);
+        std::memcpy(buf.data(), &len, 4);
+        std::memcpy(buf.data() + 4, hello, sizeof(hello) - 1);
+        greet.set_data(buf);
+    }
+    tags->add_tag("GreetingArr", string_tpl, 3);
+
+    // Row 26-29, 31: User UDT Motor { Speed:REAL, Fault:BOOL, RunCount:DINT }.
+    auto& motor_tpl = tags->add_template("Motor", {
+        TemplateMember{"Speed",    ldt::Real, 0},
+        TemplateMember{"Fault",    ldt::Bool, 0},
+        TemplateMember{"RunCount", ldt::Dint, 0},
+    });
+    {
+        auto& motor_a = tags->add_tag("MotorA", motor_tpl);
+        std::vector<uint8_t> buf(motor_tpl.structure_size(), 0);
+        float speed = 3.14f;
+        std::memcpy(buf.data() + 0, &speed, 4);
+        buf[4] = 1;  // Fault bit 0 of host SINT at offset 4
+        int32_t run_count = 42;
+        std::memcpy(buf.data() + 8, &run_count, 4);
+        motor_a.set_data(buf);
+    }
+    tags->add_tag("MotorArr", motor_tpl, 3);
+    // -------------------------------------------------------------------------
 
     ethernetip::logix::LogixDispatcher dispatcher(tags, identity);
     ethernetip::protocol::EipAdapter   adapter(dispatcher, identity);
