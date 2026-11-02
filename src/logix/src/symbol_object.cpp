@@ -133,6 +133,50 @@ CipServiceResponse SymbolObject::handle_get_instance_attribute_list(
 
     uint32_t start_instance = req.path.instance_id.value_or(0);
 
+    // Program scope: pycomm3 (and Studio 5000) scope a browse to a program
+    // by prepending an ANSI symbolic segment "Program:<name>" to the
+    // Class 0x6B + Instance path. The path parser collects that into
+    // `request.path.symbolic_name`. When it's set, enumerate only the tags
+    // inside that program; otherwise enumerate controller-scope tags *plus*
+    // one pseudo-tag per registered program so the client can discover and
+    // scope into them.
+    //
+    // Pseudo-tags are synthesized on the fly; their backing storage lives
+    // in `pseudo_scratch` for the duration of this call and is never added
+    // to the Symbol Object's CIP instance table.
+    std::vector<std::unique_ptr<Tag>> pseudo_scratch;
+    std::vector<Tag*> tags;
+    bool scoped_to_program = false;
+    const std::string kProgramPrefix = "Program:";
+    if (req.path.symbolic_name.has_value() &&
+        req.path.symbolic_name->rfind(kProgramPrefix, 0) == 0) {
+        std::string prog_name = req.path.symbolic_name->substr(kProgramPrefix.size());
+        ProgramScope* prog = tags_.find_program(prog_name);
+        if (prog == nullptr) {
+            return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
+        }
+        for (auto& kv : prog->tags_by_name_lower) tags.push_back(kv.second.get());
+        scoped_to_program = true;
+    } else {
+        tags = tags_.all_tags();
+        // Synthesize a `Program:<name>` pseudo-tag per registered program.
+        // 0x1068 marks it as a system tag (bit 12) typed as the Logix
+        // Program class (0x68) -- pycomm3 picks this out of the browse
+        // before its system-tag filter via its `name.startswith("Program:")`
+        // check and records the pseudo-instance in `plc.info['programs']`.
+        for (ProgramScope* p : tags_.all_programs()) {
+            auto pseudo = std::make_unique<Tag>(
+                p->pseudo_instance,
+                std::string("Program:") + p->name,
+                static_cast<uint16_t>(0x1068),  // symbol_type
+                static_cast<uint16_t>(0x1068),  // tag_type
+                0,                               // element_size
+                1);                              // element_count
+            tags.push_back(pseudo.get());
+            pseudo_scratch.push_back(std::move(pseudo));
+        }
+    }
+
     // All tags with instance ID >= start, sorted ascending.
     //
     // pycomm3 (and Studio 5000) resumes pagination by sending
@@ -140,14 +184,21 @@ CipServiceResponse SymbolObject::handle_get_instance_attribute_list(
     // one in the next page. Filtering with `> start_instance` drops the
     // exact tag the client asked for; use >= here. Benign at start=0 because
     // our tag instance IDs begin at 1.
-    auto tags = tags_.all_tags();
     tags.erase(std::remove_if(tags.begin(), tags.end(),
         [start_instance](Tag* t) { return t->instance_id() < start_instance; }),
         tags.end());
     std::sort(tags.begin(), tags.end(),
         [](Tag* a, Tag* b) { return a->instance_id() < b->instance_id(); });
 
-    for (Tag* t : tags) ensure_instance(*t);
+    // Controller-scope real tags already have CIP instances courtesy of
+    // LogixDispatcher's tag-added handler + sync. Program-scope tags and
+    // pseudo-tags do not and should not: pycomm3 addresses them via
+    // Program:<name>.<tag> symbolic paths, not by Symbol Object instance.
+    if (!scoped_to_program) {
+        for (Tag* t : tags) {
+            if (t->instance_id() < 0xF000) ensure_instance(*t);
+        }
+    }
 
     constexpr int max_response = 480;
     std::vector<uint8_t> buf(4096);
