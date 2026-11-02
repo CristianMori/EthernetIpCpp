@@ -183,6 +183,52 @@ int main(int argc, char** argv) {
         motor_a.set_data(buf);
     }
     tags->add_tag("MotorArr", motor_tpl, 3);
+
+    // TIMER / COUNTER / CONTROL / AOI-backing proof: all four are "just UDTs"
+    // from pycomm3's perspective -- same access pattern as Motor.*, same
+    // Template Object plumbing.  Register a Logix-shape TIMER (EN, TT, DN,
+    // PRE, ACC) and an AOI-shape UDT and seed them so the test can prove
+    // MyTimer.PRE / MyTimer.EN / MyAOI.Enable all round-trip.
+    auto& timer_tpl = tags->add_template("TIMER", {
+        TemplateMember{"EN",  ldt::Bool, 0},
+        TemplateMember{"TT",  ldt::Bool, 0},
+        TemplateMember{"DN",  ldt::Bool, 0},
+        TemplateMember{"PRE", ldt::Dint, 0},
+        TemplateMember{"ACC", ldt::Dint, 0},
+    });
+    {
+        auto& my_timer = tags->add_tag("MyTimer", timer_tpl);
+        std::vector<uint8_t> buf(timer_tpl.structure_size(), 0);
+        buf[0] = 1;                                   // EN bit 0 = True
+        int32_t pre = 1000;
+        int32_t acc = 250;
+        // Locate PRE and ACC by name, in case alignment padding changes.
+        for (const auto& m : timer_tpl.members()) {
+            if (m.name == "PRE") std::memcpy(buf.data() + m.offset, &pre, 4);
+            else if (m.name == "ACC") std::memcpy(buf.data() + m.offset, &acc, 4);
+        }
+        my_timer.set_data(buf);
+    }
+
+    auto& aoi_tpl = tags->add_template("MixerAOI", {
+        TemplateMember{"Enable",   ldt::Bool, 0},
+        TemplateMember{"Setpoint", ldt::Real, 0},
+        TemplateMember{"Done",     ldt::Bool, 0},
+        TemplateMember{"Steps",    ldt::Dint, 0},
+    });
+    {
+        auto& my_aoi = tags->add_tag("MyAOI", aoi_tpl);
+        std::vector<uint8_t> buf(aoi_tpl.structure_size(), 0);
+        float setpoint = 42.5f;
+        int32_t steps = 7;
+        for (const auto& m : aoi_tpl.members()) {
+            if (m.name == "Enable")        buf[m.offset] = 1;  // bit 0 True
+            else if (m.name == "Setpoint") std::memcpy(buf.data() + m.offset, &setpoint, 4);
+            else if (m.name == "Done")     buf[m.offset] = 0;  // bit 0 False
+            else if (m.name == "Steps")    std::memcpy(buf.data() + m.offset, &steps, 4);
+        }
+        my_aoi.set_data(buf);
+    }
     // -------------------------------------------------------------------------
 
     ethernetip::logix::LogixDispatcher dispatcher(tags, identity);

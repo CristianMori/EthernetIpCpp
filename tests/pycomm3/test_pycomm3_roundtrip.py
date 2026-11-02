@@ -348,6 +348,45 @@ def test_pycomm3_every_atomic_type_round_trips(host_server):
             _fail("31 MotorArr[1].Speed",
                    {"w": w.error, "r": r.error, "val": r.value})
 
+        # TIMER UDT -- same access pattern as a user UDT; this is an explicit
+        # witness that `MyTimer.PRE` and `MyTimer.EN` work.
+        r = plc.read("MyTimer.PRE")
+        if r.error or r.value != 1000:
+            _fail("TIMER MyTimer.PRE read", {"err": r.error, "val": r.value})
+        r = plc.read("MyTimer.EN")
+        if r.error or bool(r.value) is not True:
+            _fail("TIMER MyTimer.EN read", {"err": r.error, "val": r.value})
+        w = plc.write(("MyTimer.PRE", 2000))
+        r = plc.read("MyTimer.PRE")
+        if w.error or r.value != 2000:
+            _fail("TIMER MyTimer.PRE write",
+                   {"w": w.error, "back": r.value})
+        w = plc.write(("MyTimer.EN", False))
+        r = plc.read("MyTimer.EN")
+        if w.error or bool(r.value) is not False:
+            _fail("TIMER MyTimer.EN write",
+                   {"w": w.error, "back": r.value})
+
+        # AOI-backing UDT -- same mechanism, confirming AOI tags are not
+        # special on the wire.
+        r = plc.read("MyAOI.Enable")
+        if r.error or bool(r.value) is not True:
+            _fail("AOI MyAOI.Enable read", {"err": r.error, "val": r.value})
+        r = plc.read("MyAOI.Setpoint")
+        if r.error or abs(r.value - 42.5) >= 1e-5:
+            _fail("AOI MyAOI.Setpoint read",
+                   {"err": r.error, "val": r.value})
+        w = plc.write(("MyAOI.Setpoint", 99.9))
+        r = plc.read("MyAOI.Setpoint")
+        if w.error or abs(r.value - 99.9) >= 1e-5:
+            _fail("AOI MyAOI.Setpoint write",
+                   {"w": w.error, "back": r.value})
+        w = plc.write(("MyAOI.Enable", False))
+        r = plc.read("MyAOI.Enable")
+        if w.error or bool(r.value) is not False:
+            _fail("AOI MyAOI.Enable write",
+                   {"w": w.error, "back": r.value})
+
         # Rows 39-40: multi-service batch read & write.
         batch = plc.read("DintArr[0]", "DintArr[1]", "DintArr[2]")
         if (any(t.error for t in batch)
