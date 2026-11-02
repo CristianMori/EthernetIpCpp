@@ -120,6 +120,31 @@ CipServiceResponse handle_write_tag(Tag& tag, uint8_t service_code,
 
     int byte_offset    = element_offset * tag.element_size();
     int bytes_to_write = element_count * tag.element_size();
+
+    // pycomm3 writes SHORT_STRING as [length_byte][chars] with no fixed-slot
+    // padding, so the payload is 1 + N bytes rather than the full 81-byte
+    // element.  Accept the shorter write and pad the remainder of the slot
+    // with zeros so Read_Tag returns the same value back.  Studio 5000 does
+    // the same on Identity attribute 7, which is the only place real Logix
+    // actually exposes SHORT_STRING; application tags of this type are a
+    // convenience the server adds on top.
+    if (tag_type == 0x00DA && static_cast<int>(data.size()) >= header_len + 1) {
+        int provided        = static_cast<int>(data.size()) - header_len;
+        uint8_t length_byte = data[static_cast<size_t>(header_len)];
+        int expected_short  = 1 + static_cast<int>(length_byte);
+        if (provided >= expected_short && provided < bytes_to_write) {
+            if (byte_offset + bytes_to_write > tag.data_size()) {
+                return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+            }
+            std::vector<uint8_t> padded(static_cast<size_t>(bytes_to_write), 0);
+            std::memcpy(padded.data(),
+                        data.data() + header_len,
+                        static_cast<size_t>(provided));
+            tag.set_data(std::span<const uint8_t>(padded), byte_offset);
+            return CipServiceResponse::success(service_code);
+        }
+    }
+
     if (static_cast<int>(data.size()) < header_len + bytes_to_write) {
         return CipServiceResponse::error(service_code, CipStatus::error(0x13));
     }
