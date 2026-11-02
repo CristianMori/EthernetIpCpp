@@ -31,12 +31,19 @@ inline constexpr int MaxReplyData = 480;
     int element_offset = 0);
 
 /// Read Tag Fragmented (0x52). Request: element_count (UINT) + byte_offset (UDINT).
+/// `element_offset` indexes into the tag's array when the request path carried
+/// an element segment (Symbol Object instance + element); the resulting
+/// absolute offset is element_offset * tag.element_size() + byte_offset,
+/// mirroring the atomic handle_read_tag variant.
 [[nodiscard]] cip::CipServiceResponse handle_read_tag_fragmented(
-    const Tag& tag, uint8_t service_code, std::span<const uint8_t> data);
+    const Tag& tag, uint8_t service_code, std::span<const uint8_t> data,
+    int element_offset = 0);
 
 /// Write Tag Fragmented (0x53). Request: tag_type + element_count + byte_offset + data.
+/// `element_offset` as in handle_read_tag_fragmented.
 [[nodiscard]] cip::CipServiceResponse handle_write_tag_fragmented(
-    Tag& tag, uint8_t service_code, std::span<const uint8_t> data);
+    Tag& tag, uint8_t service_code, std::span<const uint8_t> data,
+    int element_offset = 0);
 
 /// Read Modify Write (0x4E). Request: mask_size (UINT) + OR_mask + AND_mask.
 [[nodiscard]] cip::CipServiceResponse handle_read_modify_write(

@@ -75,40 +75,53 @@ CipServiceResponse handle_write_tag(Tag& tag, uint8_t service_code,
 }
 
 CipServiceResponse handle_read_tag_fragmented(const Tag& tag, uint8_t service_code,
-                                                std::span<const uint8_t> data) {
+                                                std::span<const uint8_t> data,
+                                                int element_offset) {
     if (data.size() < 6) {
         return CipServiceResponse::error(service_code, CipStatus::error(0x13));
     }
     uint16_t element_count = ser::read_uint(data);
-    uint32_t byte_offset   = ser::read_udint(data.subspan(2));
+    uint32_t byte_offset_in_elements = ser::read_udint(data.subspan(2));
     int total_bytes = element_count * tag.element_size();
-    if (byte_offset >= static_cast<uint32_t>(total_bytes)) {
+    if (byte_offset_in_elements >= static_cast<uint32_t>(total_bytes)) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
     }
-    int remaining = total_bytes - static_cast<int>(byte_offset);
+    int base_offset     = element_offset * tag.element_size();
+    int absolute_offset = base_offset + static_cast<int>(byte_offset_in_elements);
+    if (absolute_offset >= tag.data_size()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    int remaining = std::min(total_bytes - static_cast<int>(byte_offset_in_elements),
+                             tag.data_size() - absolute_offset);
     int chunk     = std::min(remaining, MaxReplyData - 2);
-    bool more     = static_cast<int>(byte_offset) + chunk < total_bytes;
-    return build_read_response(tag, service_code, static_cast<int>(byte_offset),
+    bool more     = static_cast<int>(byte_offset_in_elements) + chunk < total_bytes;
+    return build_read_response(tag, service_code, absolute_offset,
                                 chunk, /*is_partial=*/more);
 }
 
 CipServiceResponse handle_write_tag_fragmented(Tag& tag, uint8_t service_code,
-                                                 std::span<const uint8_t> data) {
+                                                 std::span<const uint8_t> data,
+                                                 int element_offset) {
     if (data.size() < 8) {
         return CipServiceResponse::error(service_code, CipStatus::error(0x13));
     }
     uint16_t tag_type      = ser::read_uint(data);
     uint16_t element_count = ser::read_uint(data.subspan(2));
-    uint32_t byte_offset   = ser::read_udint(data.subspan(4));
+    uint32_t byte_offset_in_elements = ser::read_udint(data.subspan(4));
     if (tag_type != tag.tag_type()) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2107}));
     }
+    int base_offset = element_offset * tag.element_size();
     int total_bytes = element_count * tag.element_size();
     int write_len   = static_cast<int>(data.size()) - 8;
-    if (byte_offset + static_cast<uint32_t>(write_len) > static_cast<uint32_t>(total_bytes)) {
+    if (byte_offset_in_elements + static_cast<uint32_t>(write_len) > static_cast<uint32_t>(total_bytes)) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2104}));
     }
-    tag.set_data(data.subspan(8, write_len), static_cast<int>(byte_offset));
+    if (base_offset + static_cast<int>(byte_offset_in_elements) + write_len > tag.data_size()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    tag.set_data(data.subspan(8, write_len),
+                 base_offset + static_cast<int>(byte_offset_in_elements));
     return CipServiceResponse::success(service_code);
 }
 

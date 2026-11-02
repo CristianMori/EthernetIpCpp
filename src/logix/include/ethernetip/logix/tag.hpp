@@ -1,12 +1,16 @@
 #pragma once
 
+#include "ethernetip/logix/logix_data_types.hpp"
+
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -163,6 +167,65 @@ public:
     void add_value_changed_handler(ValueChangedHandler h) {
         handlers_.push_back(std::move(h));
     }
+
+    /// True if this tag holds CIP SHORT_STRING (0xDA): [USINT len][ASCII chars].
+    /// Independent of the Logix STRING UDT, which is a structure, not atomic.
+    [[nodiscard]] bool is_sstring() const noexcept {
+        return (tag_type_ & 0x00FF) == 0xDA;
+    }
+
+    /// Read one element of a SHORT_STRING tag as a std::string. On-wire
+    /// per element: [len:USINT][chars:ASCII] occupying
+    /// logix_data_types::ShortStringStorageSize bytes.
+    [[nodiscard]] std::string read_sstring(int element_index = 0) const {
+        if (!is_sstring()) {
+            throw std::logic_error("Tag '" + name_ + "' is not SHORT_STRING");
+        }
+        if (element_index < 0 || element_index >= element_count_) {
+            throw std::out_of_range("element_index out of range for SHORT_STRING tag");
+        }
+        int offset = element_index * element_size_;
+        int len = data_[offset];
+        return std::string(reinterpret_cast<const char*>(data_.data() + offset + 1),
+                            static_cast<size_t>(len));
+    }
+
+    /// Write a string into one element of a SHORT_STRING tag. The value must
+    /// be ASCII and at most logix_data_types::ShortStringMaxLength chars long.
+    /// Fires value_changed.
+    void write_sstring(int element_index, std::string_view value) {
+        if (!is_sstring()) {
+            throw std::logic_error("Tag '" + name_ + "' is not SHORT_STRING");
+        }
+        if (element_index < 0 || element_index >= element_count_) {
+            throw std::out_of_range("element_index out of range for SHORT_STRING tag");
+        }
+        if (static_cast<int>(value.size()) > logix_data_types::ShortStringMaxLength) {
+            throw std::invalid_argument("Value length exceeds SHORT_STRING max");
+        }
+        for (char c : value) {
+            if (static_cast<unsigned char>(c) > 0x7F) {
+                throw std::invalid_argument("SHORT_STRING only accepts ASCII (U+00..U+7F)");
+            }
+        }
+
+        int offset = element_index * element_size_;
+        data_[offset] = static_cast<uint8_t>(value.size());
+        if (!value.empty()) {
+            std::memcpy(data_.data() + offset + 1, value.data(), value.size());
+        }
+        // Zero the trailing unused capacity so a shorter string doesn't carry garbage.
+        int tail = offset + 1 + static_cast<int>(value.size());
+        int end  = offset + element_size_;
+        if (tail < end) {
+            std::memset(data_.data() + tail, 0, static_cast<size_t>(end - tail));
+        }
+
+        fire_changed({offset, element_size_});
+    }
+
+    /// Convenience overload targeting element 0.
+    void write_sstring(std::string_view value) { write_sstring(0, value); }
 
 private:
     void fire_changed(TagChangeInfo info) {

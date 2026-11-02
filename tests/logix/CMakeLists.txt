@@ -33,3 +33,11 @@ ethernetip_add_test(test_tag_client_unsigned_round_trip
 ethernetip_add_test(test_logix_structure_handle
     SOURCES test_logix_structure_handle.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_short_string
+    SOURCES test_short_string.cpp
+    LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_fragmented_element_offset
+    SOURCES test_fragmented_element_offset.cpp
+    LIBS    ethernetip::logix)
