@@ -41,3 +41,7 @@ ethernetip_add_test(test_short_string
 ethernetip_add_test(test_fragmented_element_offset
     SOURCES test_fragmented_element_offset.cpp
     LIBS    ethernetip::logix)
+
+ethernetip_add_test(test_struct_wire_prefix
+    SOURCES test_struct_wire_prefix.cpp
+    LIBS    ethernetip::logix)
