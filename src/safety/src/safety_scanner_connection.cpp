@@ -191,6 +191,15 @@ std::unique_ptr<SafetyScannerConnection> SafetyScannerConnection::open(
     // The transport's existing on_message handler (if any) is replaced; this
     // assumes a single SafetyScannerConnection per UDP transport, which mirrors
     // the C# / Python samples.
+    //
+    // raw_self is a non-owning pointer the lambda needs to touch on the
+    // UDP receive thread. The lifetime invariant is maintained by
+    // close(): it calls udp_.set_on_message(nullptr) under the
+    // transport's exclusive lock, which drains any in-flight callback
+    // invocation before returning. As long as close() runs before the
+    // SafetyScannerConnection is destroyed (the destructor enforces this
+    // by calling close()), raw_self is never touched after the object
+    // is gone.
     auto* raw_self = conn.get();
     udp.set_on_message([raw_self](std::unique_ptr<msg::Message> m) {
         if (m) raw_self->on_udp_message(*m);
@@ -361,10 +370,15 @@ void SafetyScannerConnection::send_client_tcoo(uint8_t ping_count_reply) {
 
 void SafetyScannerConnection::close() {
     if (!open_.exchange(false)) return;
-    stop_thread_.store(true);
 
+    // Drain the UDP receive callback FIRST. set_on_message(nullptr) takes
+    // the transport's exclusive lock and blocks until any in-flight
+    // callback (which captures raw_self = this) has returned. After this
+    // call no new callback can run against *this, so it is safe to tear
+    // down the rest of the object.
     udp_.set_on_message(nullptr);
 
+    stop_thread_.store(true);
     if (production_thread_.joinable()) production_thread_.join();
 
     try { send_forward_close(server_conn_serial_); } catch (...) {}
