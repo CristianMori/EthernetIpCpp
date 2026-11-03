@@ -11,6 +11,12 @@ The library is split into independent static libraries so you can link only the 
 
 This is a C++20 port of [EthernetIpSharp](https://github.com/CristianMori/EthernetIpSharp). All three ports (C#, Python, C++) share the same architecture and are wire-compatible.
 
+### Recent additions
+
+- **Fragmented tag I/O** — Logix fragmented read/write (CIP services `0x52` / `0x53`) is walker-aware: nested UDT member paths such as `Program:MainProgram.motor.counts[5]` dispatch through the `handle_*_tag_fragmented_at` siblings instead of only resolving at the tag root.
+- **Full atomic type coverage** — `BOOL`, `SINT`, `INT`, `DINT`, `LINT`, `USINT`, `UINT`, `UDINT`, `ULINT`, `REAL`, `LREAL`, `BYTE`, `WORD`, `DWORD`, `LWORD` on both client and server (see `logix_data_types.hpp`).
+- **Tests** — 219 tests passing under `ctest`.
+
 ---
 
 ## Install
