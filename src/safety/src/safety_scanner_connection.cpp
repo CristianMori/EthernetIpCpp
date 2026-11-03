@@ -44,11 +44,23 @@ SafetyScannerConnection::~SafetyScannerConnection() {
     close();
 }
 
-void SafetyScannerConnection::set_output_data(std::span<const uint8_t> data) {
-    std::scoped_lock lock(buf_mu_);
-    int n = std::min<int>(static_cast<int>(data.size()),
-                            static_cast<int>(output_data_.size()));
-    if (n > 0) std::memcpy(output_data_.data(), data.data(), n);
+bool SafetyScannerConnection::set_output_data(std::span<const uint8_t> data) {
+    bool fits;
+    {
+        std::scoped_lock lock(buf_mu_);
+        fits = data.size() <= output_data_.size();
+        int n = std::min<int>(static_cast<int>(data.size()),
+                                static_cast<int>(output_data_.size()));
+        if (n > 0) std::memcpy(output_data_.data(), data.data(), n);
+    }
+    if (!fits) {
+        char m[128];
+        std::snprintf(m, sizeof(m),
+                       "set_output_data: input %zu bytes exceeds buffer %zu — truncated",
+                       data.size(), output_data_.size());
+        log(m);
+    }
+    return fits;
 }
 
 std::unique_ptr<SafetyScannerConnection> SafetyScannerConnection::open(

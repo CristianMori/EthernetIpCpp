@@ -65,7 +65,10 @@ public:
 
     /// Replace the safety output data sent on the next O->T cycle. Caller
     /// owns the bytes; the connection takes a snapshot.
-    void set_output_data(std::span<const uint8_t> data);
+    /// Returns false (and logs a warning) if the input is larger than the
+    /// buffer negotiated at open time — the overflowing bytes are dropped,
+    /// but silent truncation would otherwise ship stale output.
+    bool set_output_data(std::span<const uint8_t> data);
 
     /// Fires (on the UDP dispatch thread) for each valid T<-O safety frame.
     void set_data_received_handler(DataReceivedHandler h) {
