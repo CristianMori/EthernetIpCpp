@@ -340,7 +340,12 @@ void SafetyScannerConnection::on_client_data(std::span<const uint8_t> payload) {
 
     if (result.crc_valid) {
         rx_count_.fetch_add(1);
-        if (data_received_) data_received_(result.actual_data);
+        DataReceivedHandler h;
+        {
+            std::shared_lock lock(handler_mu_);
+            h = data_received_;
+        }
+        if (h) h(result.actual_data);
     } else {
         log(std::string("RX CRC FAIL: ") + result.error_message.value_or(""));
     }

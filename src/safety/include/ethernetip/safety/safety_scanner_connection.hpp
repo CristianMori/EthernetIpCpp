@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <thread>
@@ -67,10 +68,16 @@ public:
     void set_output_data(std::span<const uint8_t> data);
 
     /// Fires (on the UDP dispatch thread) for each valid T<-O safety frame.
-    void set_data_received_handler(DataReceivedHandler h) { data_received_ = std::move(h); }
+    void set_data_received_handler(DataReceivedHandler h) {
+        std::unique_lock lock(handler_mu_);
+        data_received_ = std::move(h);
+    }
 
     /// Fires for log messages (incl. transition notifications, CRC errors).
-    void set_log_handler(LogHandler h) { log_ = std::move(h); }
+    void set_log_handler(LogHandler h) {
+        std::unique_lock lock(handler_mu_);
+        log_ = std::move(h);
+    }
 
     [[nodiscard]] bool   is_open()     const noexcept { return open_.load(); }
     [[nodiscard]] uint64_t tx_count()  const noexcept { return tx_count_.load(); }
@@ -91,7 +98,14 @@ private:
     void produce_server_data();
     void production_loop(uint32_t rpi_us);
     void send_forward_close(uint16_t conn_serial);
-    void log(const std::string& msg) const { if (log_) log_(msg); }
+    void log(const std::string& msg) const {
+        LogHandler h;
+        {
+            std::shared_lock lock(handler_mu_);
+            h = log_;
+        }
+        if (h) h(msg);
+    }
 
     // ---- Refs / config ----
     protocol::EipScanner&      scanner_;
@@ -157,6 +171,11 @@ private:
     std::atomic<uint64_t> tx_count_{0};
     std::atomic<uint64_t> rx_count_{0};
 
+    /// Guards data_received_ and log_. Setters take exclusive, the UDP
+    /// dispatch path and log() take shared. std::function is not safe to
+    /// copy concurrently with an assignment; the previous unlocked
+    /// assignment was a formal data race.
+    mutable std::shared_mutex handler_mu_;
     DataReceivedHandler data_received_;
     LogHandler          log_;
 };
