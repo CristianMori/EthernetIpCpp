@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <shared_mutex>
 #include <span>
 
 namespace ethernetip::protocol {
@@ -26,7 +27,16 @@ public:
     EipUdpTransport& operator=(const EipUdpTransport&) = delete;
 
     /// Handler invoked on the UDP dispatch thread for each parsed message.
-    void set_on_message(MessageHandler h) { on_message_ = std::move(h); }
+    /// Serialized against the receive-thread dispatch via `on_message_mu_`:
+    /// installation / clearing takes an exclusive lock, so a `nullptr`
+    /// assignment used by a connection's `close()` acts as a drain barrier
+    /// — it blocks until any in-flight callback invocation has returned,
+    /// which keeps a captured `this` from outliving its connection.
+    /// Reentering `set_on_message` from inside the callback itself would
+    /// deadlock on the shared-to-exclusive upgrade — current callers only
+    /// install the handler at open and clear it at close, from a thread
+    /// that is not the receive thread.
+    void set_on_message(MessageHandler h);
 
     /// Bind + start.
     void start(const IpEndpoint& bind);
@@ -43,6 +53,7 @@ public:
 
 private:
     UdpSocket socket_;
+    mutable std::shared_mutex on_message_mu_;
     MessageHandler on_message_;
 };
 
