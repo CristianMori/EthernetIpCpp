@@ -185,11 +185,12 @@ void VirtualDevice::on_connection_opened_from_adapter(
 void VirtualDevice::on_udp_message(std::unique_ptr<messages::Message> msg) {
     if (msg->kind != messages::MessageKind::CpfConnectedData) return;
     auto& cpf = static_cast<messages::CpfConnectedDataMessage&>(*msg);
-    // F3 will convert this to hold the shared_ptr directly; for the API
-    // transition we keep the raw pointer semantics.
-    auto conn_sp = connection_manager_.find_by_oto_t_id(cpf.connection_id);
-    auto* conn = conn_sp.get();
-    if (conn == nullptr || conn->state != ConnectionState::Established) return;
+    // Hold the shared_ptr for the full duration of this handler. A
+    // concurrent Forward Close can drop the manager's reference between
+    // the lookup and handle_received_io_data, but as long as this
+    // shared_ptr is live the IoConnection cannot destruct.
+    auto conn = connection_manager_.find_by_oto_t_id(cpf.connection_id);
+    if (!conn || conn->state != ConnectionState::Established) return;
 
     // Learn / update the scanner's UDP sender endpoint — the originator
     // typically sends from a port other than 2222.

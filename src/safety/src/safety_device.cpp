@@ -465,11 +465,11 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
     // a cold-start frame on the partner client connection (only fires once).
     if (plc_running && !conn.safety_plc_running) {
         conn.safety_plc_running = true;
-        // F3 will keep each entry as a shared_ptr pin for the duration of
-        // the produce_io_data call; for the API transition, keep raw ptrs.
-        for (auto& other_sp : connection_manager().active_connections()) {
-            auto* other = other_sp.get();
-            if (other != &conn
+        // Each `other` is a shared_ptr pin from the snapshot, so the
+        // IoConnection cannot destruct while produce_io_data runs even if
+        // a Forward Close for that partner lands concurrently.
+        for (auto& other : connection_manager().active_connections()) {
+            if (other.get() != &conn
                 && other->is_safety
                 && other->originator_vendor_id == conn.originator_vendor_id
                 && other->originator_serial_number == conn.originator_serial_number
@@ -485,9 +485,8 @@ void SafetyDevice::on_remote_endpoint_updated(IoConnection& conn,
     if (!conn.is_safety) return;
     // Propagate the endpoint to every safety connection from the same
     // originator (partner connections may not have seen incoming data yet).
-    for (auto& other_sp : connection_manager().active_connections()) {
-        auto* other = other_sp.get();
-        if (other != &conn
+    for (auto& other : connection_manager().active_connections()) {
+        if (other.get() != &conn
             && other->is_safety
             && other->originator_vendor_id == conn.originator_vendor_id
             && other->originator_serial_number == conn.originator_serial_number) {
