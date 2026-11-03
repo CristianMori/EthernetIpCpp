@@ -79,6 +79,18 @@ CipServiceResponse handle(cip::ICipDispatch& dispatch, const CipServiceRequest& 
             sub_resp = dispatch.dispatch(parsed->service_code, parsed->path, parsed->data);
         }
         int resp_len = sub_resp.encode(encode_buf);
+        if (resp_len < 0) {
+            // Sub-response is too large for the per-sub buffer. The depth cap
+            // bounds recursion, but a nested MSP (or any oversized sub-reply)
+            // can still exceed encode_buf's capacity — encoding it unchecked
+            // would overflow the heap. Replace the oversized reply with a
+            // size-error response for this sub-service and continue so the
+            // remaining sub-services still get processed.
+            uint8_t svc = static_cast<uint8_t>(sub_resp.service_code & 0x7F);
+            sub_resp = CipServiceResponse::error(
+                svc, CipStatus::error(CipStatus::TooMuchData));
+            resp_len = sub_resp.encode(encode_buf);
+        }
         responses[i].assign(encode_buf.begin(), encode_buf.begin() + resp_len);
     }
 

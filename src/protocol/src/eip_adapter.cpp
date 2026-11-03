@@ -209,6 +209,14 @@ std::vector<uint8_t> EipAdapter::handle_send_rr_data(messages::SendRRDataMessage
     // Encode MR response.
     std::vector<uint8_t> mr_buf(4096);
     int mr_len = cip_response.encode(mr_buf);
+    if (mr_len < 0) {
+        // Response payload exceeds our MR encode buffer. Substitute a
+        // TooMuchData error for the originating service rather than send
+        // a truncated or corrupt reply.
+        cip_response = cip::CipServiceResponse::error(
+            parsed->service_code, cip::CipStatus::error(cip::CipStatus::TooMuchData));
+        mr_len = cip_response.encode(mr_buf);
+    }
     mr_buf.resize(mr_len);
 
     cpf_helpers::CpfBuilder cpf;
@@ -257,6 +265,11 @@ std::vector<uint8_t> EipAdapter::handle_send_unit_data(messages::SendUnitDataMes
 
     std::vector<uint8_t> mr_buf(4096);
     int mr_len = cip_response.encode(mr_buf);
+    if (mr_len < 0) {
+        cip_response = cip::CipServiceResponse::error(
+            parsed->service_code, cip::CipStatus::error(cip::CipStatus::TooMuchData));
+        mr_len = cip_response.encode(mr_buf);
+    }
     mr_buf.resize(mr_len);
 
     // Echo the sequence count back at the head of the ConnectedData payload.
