@@ -89,6 +89,13 @@ int SafetyNetworkSegment::encode(std::span<uint8_t> output) const {
     bool is_extended = (format == 0x02);
     uint8_t data_len_words = is_extended ? 0x1E : 0x1B;  // 30 or 27 words
 
+    // Required = 2 (type + len) + 2 * data_len_words. Refuse to encode
+    // into an output span that cannot hold the whole segment — all the
+    // writes below use fixed offsets, so a short span would silently
+    // overrun the caller's buffer.
+    size_t required = 2u + static_cast<size_t>(data_len_words) * 2u;
+    if (output.size() < required) return -1;
+
     size_t off = 0;
     output[off++] = SegmentType;
     output[off++] = data_len_words;
