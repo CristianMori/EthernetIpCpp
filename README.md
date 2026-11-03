@@ -71,6 +71,7 @@ client.disconnect();
 - [CIP services supported](#cip-services-supported)
 - [CIP Safety details](#cip-safety-details)
 - [Known limitations](#known-limitations)
+- [Security hardening](#security-hardening)
 - [Related projects](#related-projects)
 - [License](#license)
 
@@ -632,6 +633,27 @@ The full safety ownership state machine (Propose_TUNID / Apply_TUNID / Configure
 - Assembly Object contents are in-memory only (tag values persist via `ethernetip::logix::persistence::save` / `load`).
 - Originator-side connection bridging through multiple hops is not implemented.
 - Safety reset / safety configuration apply services are wired in but not extensively interop-tested.
+
+---
+
+## Security hardening
+
+Six rounds of static security review have been applied across the stack, landing 35 commits. The test suite currently stands at **225 tests passing** under `ctest`.
+
+Coverage spans both server-side (adapter / target) and client-side (scanner) paths:
+
+- **CIP path parsing** — 0x91 ANSI symbolic segments now enforce the trailing pad byte on odd-length names.
+- **Logix tag services** — bounds-checked `CipServiceResponse::encode`; `Tag::set_data` / `get_data` reject out-of-range element counts; `element_offset × element_size` widened to 64-bit so large-tag arithmetic cannot overflow; `Template_Read` bounds the requested slice against the template body; SHORT_STRING length byte is clamped to the declared capacity.
+- **Symbol Object** — `Get_Instance_Attribute_List` validates response bounds and caps the per-reply attribute count.
+- **Encapsulation framing** — length-field checks tightened against the enclosing TCP frame.
+- **Multiple_Service_Packet** — shared `cip::dispatch_depth` recursion cap (also honored by `Unconnected_Send`) and full validation of the per-service offset table.
+- **IoConnection lifetime** — connection lookups go through `shared_ptr`; the producer thread holds only a `weak_ptr`; `on_connection_removed` cancels and joins the producer before destruction. Hot per-frame fields are `std::atomic`, and endpoint mutation sits behind a dedicated mutex.
+- **UDP transport** — a `shared_mutex` drain barrier gates teardown, closing two use-after-free windows on the scanner side where in-flight datagrams could outlive their `ScannerConnection`.
+- **CIP Safety stack** — `SafetyNetworkSegment` enforces a format-specific minimum length; `SafetyValidator` reap is driven by `on_connection_removed`; the Forward Open path walker locates the 0x50 safety segment structurally instead of scanning for the byte.
+
+The C++-specific thread of this work is memory safety: no raw-pointer captures outlive their `IoConnection`, and every counter touched by more than one thread is read through `std::atomic` or `std::atomic_ref`.
+
+Framing: this isn't "secure" — it closes specific attack and correctness gaps surfaced by six static-review rounds. Industrial CIP has no authentication; real deployments still need network segmentation.
 
 ---
 
