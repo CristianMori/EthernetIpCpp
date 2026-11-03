@@ -160,6 +160,55 @@ TEST(FragmentedElementOffsetTest, SymbolicNamePath_FragmentedWrite_HonorsElement
     EXPECT_EQ(0,    tag.read<int32_t>(8 * 4));
 }
 
+// Ordered-segments (walker) path in LogixDispatcher::dispatch_via_walker:
+// the switch's default arm (fragmented services 0x52 / 0x53) used to call
+// dispatch_tag_service with element_offset=0, dropping the walker-resolved
+// offset. A fragmented read of counts[5] routed through
+// [SymbolicPathSegment("counts"), ElementPathSegment{5}] therefore read from
+// element 0. Mirrors the symbolic-name fix in commit 5960596.
+TEST(FragmentedElementOffsetTest, WalkerPath_FragmentedRead_HonorsElementId) {
+    LogixDispatcher disp;
+    auto& tag = disp.tags().add_tag("counts", ldt::Dint, /*element_count=*/10);
+    for (int i = 0; i < 10; ++i) tag.write<int32_t>(i * 4, 500 + i);
+
+    ethernetip::cip::CipPath p;
+    p.segments.push_back(ethernetip::cip::SymbolicPathSegment{"counts"});
+    p.segments.push_back(ethernetip::cip::ElementPathSegment{5});
+
+    auto req  = fragmented_read_body(/*element_count=*/1, /*byte_offset=*/0);
+    auto resp = disp.dispatch(tag_services::ReadTagFragmented, p, req);
+
+    ASSERT_TRUE(resp.status.is_success())
+        << "general_status=0x" << std::hex
+        << static_cast<unsigned>(resp.status.general_status);
+    ASSERT_GE(resp.data.size(), 6u);
+    EXPECT_EQ(ldt::Dint, ser::read_uint(resp.data));
+    EXPECT_EQ(505u, ser::read_udint(std::span<const uint8_t>(resp.data).subspan(2)));
+}
+
+TEST(FragmentedElementOffsetTest, WalkerPath_FragmentedWrite_HonorsElementId) {
+    LogixDispatcher disp;
+    auto& tag = disp.tags().add_tag("counts", ldt::Dint, /*element_count=*/10);
+
+    ethernetip::cip::CipPath p;
+    p.segments.push_back(ethernetip::cip::SymbolicPathSegment{"counts"});
+    p.segments.push_back(ethernetip::cip::ElementPathSegment{7});
+
+    std::array<uint8_t, 4> payload{};
+    int32_t v = 9999;
+    std::memcpy(payload.data(), &v, 4);
+    auto req  = fragmented_write_body(ldt::Dint, /*element_count=*/1,
+                                       /*byte_offset=*/0, payload);
+    auto resp = disp.dispatch(tag_services::WriteTagFragmented, p, req);
+
+    ASSERT_TRUE(resp.status.is_success())
+        << "general_status=0x" << std::hex
+        << static_cast<unsigned>(resp.status.general_status);
+    EXPECT_EQ(9999, tag.read<int32_t>(7 * 4));
+    EXPECT_EQ(0,    tag.read<int32_t>(0 * 4));
+    EXPECT_EQ(0,    tag.read<int32_t>(8 * 4));
+}
+
 TEST(FragmentedElementOffsetTest, SymbolObject_FragmentedRead_ParityWithAtomicReadTag) {
     LogixDispatcher disp;
     auto& tag = disp.tags().add_tag("counts", ldt::Dint, /*element_count=*/10);

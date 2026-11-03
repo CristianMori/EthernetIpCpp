@@ -262,7 +262,20 @@ CipServiceResponse LogixDispatcher::dispatch_via_walker(Tag& tag, uint8_t servic
     switch (service_code) {
         case tag_services::ReadTag:  return tag_services::handle_read_tag_at(tag, service_code, data, *walked);
         case tag_services::WriteTag: return tag_services::handle_write_tag_at(tag, service_code, data, *walked);
-        default:                      return dispatch_tag_service(tag, service_code, data, 0);
+        default: {
+            // Fragmented tag services (0x52/0x53) take an element_offset that
+            // handle_read_tag_fragmented / handle_write_tag_fragmented multiply
+            // by tag.element_size() to form their base byte offset. The walker
+            // produces a byte offset (walked->offset) and the element size at
+            // the resolved node, so convert back to an element index. Mirrors
+            // the symbolic-name fix in commit 5960596: without this the walker
+            // resolved offset is lost and a fragmented read of counts[5] via
+            // an ordered-segments path reads from element 0.
+            int el = (walked->element_size > 0)
+                         ? walked->offset / walked->element_size
+                         : 0;
+            return dispatch_tag_service(tag, service_code, data, el);
+        }
     }
 }
 
