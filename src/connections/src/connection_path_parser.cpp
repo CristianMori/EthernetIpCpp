@@ -154,4 +154,86 @@ done:
     return result;
 }
 
+std::optional<std::size_t> find_safety_segment(std::span<const uint8_t> path) {
+    namespace ser = ethernetip::cip::serializer;
+
+    // Same wrapper strip as parse_connection_path — a 21 00 FC 04 2C 01
+    // prelude from Logix Emulate originators sits in front of the real
+    // segments, so the search offset must be reported in path's own
+    // coordinates, not the stripped view's.
+    std::size_t base = 0;
+    if (path.size() >= 6 &&
+        path[0] == 0x21 && path[1] == 0x00 &&
+        path[2] == 0xFC && path[3] == 0x04 &&
+        path[4] == 0x2C && path[5] == 0x01) {
+        base = 6;
+        path = path.subspan(6);
+    }
+
+    std::size_t offset = 0;
+    while (offset < path.size()) {
+        uint8_t seg      = path[offset];
+        uint8_t seg_type = static_cast<uint8_t>(seg & 0xE0);
+
+        // Electronic key (0x34) — payload bytes can include 0x50 without
+        // meaning anything. Skip the whole key before looking for 0x50.
+        if (seg == 0x34) {
+            ++offset;
+            if (offset >= path.size()) return std::nullopt;
+            uint8_t key_format = path[offset++];
+            int key_size = (key_format == 4 || key_format == 5) ? 8 : 0;
+            offset += static_cast<std::size_t>(key_size);
+            continue;
+        }
+
+        if (seg_type == 0x20) {  // Logical segment
+            uint8_t format = static_cast<uint8_t>(seg & 0x03);
+            ++offset;
+            switch (format) {
+                case 0x00:   // 8-bit value
+                    if (offset >= path.size()) return std::nullopt;
+                    ++offset;
+                    break;
+                case 0x01:   // 16-bit value (word-aligned)
+                    if (offset % 2 != 0) ++offset;
+                    if (offset + 2 > path.size()) return std::nullopt;
+                    offset += 2;
+                    break;
+                default:
+                    return std::nullopt;
+            }
+        } else if (seg_type == 0x00) {   // Port segment (routing)
+            bool extended = (seg & 0x10) != 0;
+            ++offset;
+            if (extended) {
+                if (offset >= path.size()) return std::nullopt;
+                uint8_t addr_size = path[offset++];
+                offset += addr_size;
+                if (offset % 2 != 0) ++offset;
+            } else {
+                if (offset >= path.size()) return std::nullopt;
+                ++offset;
+            }
+        } else if (seg_type == 0x80) {   // Simple Data Segment
+            ++offset;
+            if (offset >= path.size()) return std::nullopt;
+            uint8_t data_words = path[offset++];
+            std::size_t data_bytes = static_cast<std::size_t>(data_words) * 2;
+            if (offset + data_bytes > path.size()) return std::nullopt;
+            offset += data_bytes;
+        } else if (seg_type == 0x40) {   // Network segment
+            if (seg == 0x50) {
+                return base + offset;    // Safety Network Segment found
+            }
+            ++offset;
+            if (offset >= path.size()) return std::nullopt;
+            uint8_t net_seg_len = path[offset++];
+            offset += static_cast<std::size_t>(net_seg_len) * 2;
+        } else {
+            return std::nullopt;  // unknown segment type
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace ethernetip::connections

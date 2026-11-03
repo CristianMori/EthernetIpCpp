@@ -62,3 +62,25 @@ TEST(ConnectionPathParserTest, SafetySegmentCaptured) {
     EXPECT_EQ(0x50, r.safety_segment[0]);
     EXPECT_EQ(0x02, r.safety_segment[1]);
 }
+
+// Regression: a byte scan for 0x50 would latch onto the 0x50 byte inside
+// this electronic key's payload instead of the real Safety segment that
+// follows. find_safety_segment() must walk segments and skip the key.
+TEST(ConnectionPathParserTest, FindSafetySegmentSkipsEkeyWith0x50Payload) {
+    std::array<uint8_t, 22> path{
+        // ElectronicKey (format 4, 10 bytes total): payload byte 0x50 at idx 7.
+        0x34, 0x04, 0x01, 0x00, 0x23, 0x00, 0x10, 0x50, 0x82, 0x02,
+        // Assembly path (not strictly needed, but realistic framing)
+        0x20, 0x04, 0x24, 0x01, 0x2C, 0x64, 0x2C, 0x66,
+        // Real Safety Network Segment (header + 0 data words — just the type/len)
+        0x50, 0x00, 0xAA, 0xBB};
+    auto off = find_safety_segment(path);
+    ASSERT_TRUE(off.has_value());
+    EXPECT_EQ(18u, *off);
+    EXPECT_EQ(0x50, path[*off]);
+}
+
+TEST(ConnectionPathParserTest, FindSafetySegmentReturnsNulloptWhenAbsent) {
+    std::array<uint8_t, 8> path{0x20, 0x04, 0x24, 0x05, 0x2C, 0x64, 0x2C, 0x66};
+    EXPECT_FALSE(find_safety_segment(path).has_value());
+}

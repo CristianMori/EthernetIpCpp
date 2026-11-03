@@ -36,4 +36,14 @@ struct ConnectionPathResult {
     parse_connection_path(std::span<const uint8_t> path,
                             const ForwardOpenRequest& request);
 
+/// Walk `path` as proper CIP segments (handling electronic key payloads,
+/// port segments, logical segments, simple data segments) and return the
+/// byte offset of the Safety Network Segment (0x50) if one is present.
+///
+/// This is a segment-aware alternative to a raw `path[i] == 0x50` byte
+/// scan: an ElectronicKey (0x34) payload byte of 0x50 would otherwise
+/// masquerade as a Safety segment and misalign CPCRC validation.
+[[nodiscard]] std::optional<std::size_t>
+    find_safety_segment(std::span<const uint8_t> path);
+
 } // namespace ethernetip::connections

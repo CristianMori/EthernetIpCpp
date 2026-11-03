@@ -1,6 +1,7 @@
 #include "ethernetip/safety/safety_device.hpp"
 
 #include "ethernetip/cip/data_serializer.hpp"
+#include "ethernetip/connections/connection_path_parser.hpp"
 #include "ethernetip/safety/safety_cpcrc.hpp"
 #include "ethernetip/safety/safety_crc.hpp"
 #include "ethernetip/safety/safety_frame_codec.hpp"
@@ -89,11 +90,15 @@ std::optional<uint16_t> SafetyDevice::validate_safety_open(
     if (our_tunid != seg_tunid) return uint16_t{0x080E};
 
     // 2. Validate CPCRC against the raw FwdOpen + path bytes.
+    //
+    // Walk the connection path as proper CIP segments to locate the 0x50
+    // Safety Network Segment — a raw byte scan would misalign on a 0x50
+    // byte that happens to appear inside an ElectronicKey (0x34) payload,
+    // and legitimate clients would then see a confusing CPCRC error.
     const auto& conn_path = fwd_open.connection_path;
-    size_t safety_off = 0;
-    for (size_t i = 0; i + 1 < conn_path.size(); ++i) {
-        if (conn_path[i] == 0x50) { safety_off = i; break; }
-    }
+    auto safety_off_opt = find_safety_segment(conn_path);
+    if (!safety_off_opt.has_value()) return uint16_t{0x080E};
+    size_t safety_off = *safety_off_opt;
     std::span<const uint8_t> ekey_app_path(conn_path.data(), safety_off);
     size_t nsd_size = (seg.format == 0x02) ? 50u : 48u;
     if (safety_off + nsd_size > conn_path.size()) return uint16_t{0x080E};
