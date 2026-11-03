@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -124,7 +125,12 @@ private:
     std::unique_ptr<EipUdpTransport> udp_transport_;
     std::atomic<uint16_t>            next_conn_serial_{1};
 
-    std::mutex                                        routes_mu_;
+    // routes_mu_ is a shared_mutex: on_udp_message_dispatch holds it shared
+    // for the entire handler invocation so that unregister_udp_route (which
+    // takes it exclusively) blocks until any in-flight dispatch into a
+    // ScannerConnection has returned. Handlers must not acquire routes_mu_
+    // from inside the callback.
+    mutable std::shared_mutex                         routes_mu_;
     std::unordered_map<uint32_t, UdpRouteHandler>     routes_;
 };
 

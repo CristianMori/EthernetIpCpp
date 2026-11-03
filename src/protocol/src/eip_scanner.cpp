@@ -466,26 +466,29 @@ void EipScanner::forward_close(uint16_t connection_serial,
 }
 
 void EipScanner::register_udp_route(uint32_t tto_o_connection_id, UdpRouteHandler h) {
-    std::scoped_lock lock(routes_mu_);
+    std::unique_lock lock(routes_mu_);
     routes_[tto_o_connection_id] = std::move(h);
 }
 
 void EipScanner::unregister_udp_route(uint32_t tto_o_connection_id) {
-    std::scoped_lock lock(routes_mu_);
+    // Exclusive lock: waits for any in-flight dispatch holding the shared
+    // lock to return before the handler (and the ScannerConnection it
+    // captures) can be erased.
+    std::unique_lock lock(routes_mu_);
     routes_.erase(tto_o_connection_id);
 }
 
 void EipScanner::on_udp_message_dispatch(std::unique_ptr<messages::Message> msg) {
     if (msg->kind != messages::MessageKind::CpfConnectedData) return;
     auto& cpf = static_cast<messages::CpfConnectedDataMessage&>(*msg);
-    UdpRouteHandler h;
-    {
-        std::scoped_lock lock(routes_mu_);
-        auto it = routes_.find(cpf.connection_id);
-        if (it == routes_.end()) return;
-        h = it->second;
-    }
-    if (h) h(*msg);
+    // Hold the shared lock across the handler invocation so the handler's
+    // captured ScannerConnection* cannot be destroyed concurrently —
+    // unregister_udp_route (called from ScannerConnection::close) blocks
+    // on the matching exclusive lock until we return.
+    std::shared_lock lock(routes_mu_);
+    auto it = routes_.find(cpf.connection_id);
+    if (it == routes_.end()) return;
+    if (it->second) it->second(*msg);
 }
 
 } // namespace ethernetip::protocol
