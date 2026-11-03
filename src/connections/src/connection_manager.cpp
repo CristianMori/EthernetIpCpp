@@ -253,14 +253,24 @@ CipServiceResponse ConnectionManagerObject::handle_forward_close(
     uint16_t orig_vendor = ser::read_uint(request.data.subspan(4));
     uint32_t orig_serial = ser::read_udint(request.data.subspan(6));
 
+    // Find + pop under a single lock scope. Previously this searched the
+    // map, released the lock, and then called remove_connection — which
+    // reacquired the lock and did a second lookup by oto_t_connection_id.
+    // A concurrent Forward Close for the same triad could pop the entry
+    // between the two acquisitions; both threads would then proceed to
+    // fire on_connection_removed callbacks, double-close the connection,
+    // and (prior to the shared_ptr refactor) dereference the raw pointer
+    // after it had been destroyed. One lock-and-pop closes that window.
     std::shared_ptr<IoConnection> found;
     {
         std::scoped_lock lock(mu_);
-        for (auto& [_, conn] : connections_) {
+        for (auto it = connections_.begin(); it != connections_.end(); ++it) {
+            auto& conn = it->second;
             if (conn->connection_serial_number == conn_serial
                 && conn->originator_vendor_id  == orig_vendor
                 && conn->originator_serial_number == orig_serial) {
-                found = conn;
+                found = std::move(conn);
+                connections_.erase(it);
                 break;
             }
         }
@@ -270,7 +280,11 @@ CipServiceResponse ConnectionManagerObject::handle_forward_close(
             CipStatus::error(0x01, std::vector<uint16_t>{0x0107}));
     }
 
-    remove_connection(*found);
+    // Already popped from connections_; just close + fire callbacks.
+    found->close();
+    for (auto& cb : on_connection_removed) {
+        cb(*found);
+    }
 
     std::vector<uint8_t> resp(10);
     ser::write_uint (resp,                                conn_serial);
