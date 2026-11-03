@@ -3,9 +3,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace ethernetip::connections {
@@ -54,14 +57,24 @@ struct IoConnection {
     TransportClass transport_class = TransportClass::Class1;
     uint8_t  timeout_multiplier = 0;     ///< 0=x4, 1=x8, ... 7=x512
 
-    // ---- Network ----
+    // ---- Network (guarded by endpoint_mu_) ----
+    //
+    // The remote endpoint is written by the TCP adapter path
+    // (on_connection_opened_from_adapter) AND by the UDP RX path
+    // (on_udp_message learning the originator's send port), while it is
+    // read by the production thread and the safety fan-out loops. The
+    // string field in particular cannot be modified concurrently with a
+    // read on another thread without UB. One mutex per IoConnection
+    // guards all three fields together so an endpoint change is observed
+    // atomically.
+    mutable std::mutex endpoint_mu_;
     std::string remote_host;             ///< Originator's IPv4 dotted-decimal
     uint16_t    remote_port = 0;
     bool        remote_endpoint_set = false;
 
     // ---- Sequence tracking ----
-    uint32_t encapsulation_sequence_number = 1;
-    uint16_t cip_sequence_count = 0;
+    std::atomic<uint32_t> encapsulation_sequence_number{1};
+    std::atomic<uint16_t> cip_sequence_count{0};
 
     // ---- Safety state (used only when is_safety = true) ----
     bool is_safety = false;
@@ -78,15 +91,19 @@ struct IoConnection {
     uint16_t safety_cid_seed_s3 = 0;
     uint32_t safety_cid_seed_s5 = 0;
 
-    // Producer-side runtime state.
-    bool     safety_consumer_active = false;
-    uint16_t safety_timestamp = 0;
-    uint16_t safety_rollover_count = 0;
+    // Producer-side runtime state. Hot counters touched by the UDP RX
+    // thread, the producer thread, the watchdog, and the TCP thread are
+    // atomic. Non-hot config fields (initial_*, production_start_ticks)
+    // are set at FwdOpen configuration and read later; no concurrent
+    // write is possible, so they stay plain.
+    std::atomic<bool>     safety_consumer_active{false};
+    std::atomic<uint16_t> safety_timestamp{0};
+    std::atomic<uint16_t> safety_rollover_count{0};
     uint16_t safety_initial_timestamp = 0;
     uint16_t safety_initial_rollover_value = 0;
-    uint16_t safety_last_produced_timestamp = 0;
-    int64_t  safety_last_sent_ticks = 0;
-    int64_t  safety_last_frame_sent_ticks = 0;
+    std::atomic<uint16_t> safety_last_produced_timestamp{0};
+    int64_t  safety_last_sent_ticks = 0;      ///< producer-thread only
+    std::atomic<int64_t>  safety_last_frame_sent_ticks{0};
     int64_t  safety_production_start_ticks = 0;
 
     // Time-correction.
@@ -102,7 +119,7 @@ struct IoConnection {
     int64_t  safety_last_ping_change_ticks = 0;
 
     // Consumer-side runtime state.
-    uint16_t safety_originator_rollover_count = 0;
+    std::atomic<uint16_t> safety_originator_rollover_count{0};
     uint16_t safety_originator_last_ts = 0;
     bool     safety_originator_rollover_initialized = false;
     bool     safety_plc_running = false;
@@ -113,9 +130,14 @@ struct IoConnection {
     uint16_t safety_validator_instance_id = 0;
 
     // ---- State ----
-    ConnectionState state = ConnectionState::Established;
-    std::chrono::steady_clock::time_point last_received =
-        std::chrono::steady_clock::now();
+    std::atomic<ConnectionState> state{ConnectionState::Established};
+    /// Microseconds since the steady_clock epoch of the last inbound
+    /// frame. Written by on_udp_message, read by the watchdog thread, so
+    /// kept atomic — the previous std::chrono::time_point was not safe to
+    /// read concurrently with a write.
+    std::atomic<int64_t> last_received{
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()};
     /// Per CIP Vol 1 §3-4.5.2, the consumer connection-timeout timer must
     /// not start until the first inbound frame arrives. Without this flag
     /// the watchdog would count from FwdOpen accept and close the
@@ -123,7 +145,7 @@ struct IoConnection {
     /// `rpi * timeout_multiplier` to start streaming — which is common
     /// over Wi-Fi + VPN or on scanners that establish both directions of
     /// a paired safety connection before starting either producer.
-    bool first_received = false;
+    std::atomic<bool> first_received{false};
 
     /// Map a timeout multiplier code to its actual value (4, 8, 16, ..., 512).
     [[nodiscard]] static int multiplier_value(uint8_t code) noexcept;
@@ -132,7 +154,24 @@ struct IoConnection {
     [[nodiscard]] int64_t connection_timeout_us() const noexcept;
 
     /// Mark the connection as closed.
-    void close() noexcept { state = ConnectionState::NonExistent; }
+    void close() noexcept { state.store(ConnectionState::NonExistent); }
+
+    /// Replace the remote UDP endpoint atomically. All three fields —
+    /// remote_host, remote_port, remote_endpoint_set — must be observed
+    /// together, so take endpoint_mu_ around every write.
+    void set_remote_endpoint(std::string host, uint16_t port) {
+        std::scoped_lock lock(endpoint_mu_);
+        remote_host = std::move(host);
+        remote_port = port;
+        remote_endpoint_set = true;
+    }
+
+    /// Snapshot of the remote endpoint. Returns {host, port, is_set}.
+    [[nodiscard]] std::tuple<std::string, uint16_t, bool>
+    get_remote_endpoint() const {
+        std::scoped_lock lock(endpoint_mu_);
+        return {remote_host, remote_port, remote_endpoint_set};
+    }
 };
 
 } // namespace ethernetip::connections

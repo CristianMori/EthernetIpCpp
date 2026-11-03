@@ -87,7 +87,7 @@ void ConnectionManagerObject::remove_connection(IoConnection& conn) {
 }
 
 void ConnectionManagerObject::timeout_connection(IoConnection& conn) {
-    conn.state = ConnectionState::TimedOut;
+    conn.state.store(ConnectionState::TimedOut);
     remove_connection(conn);
 }
 
@@ -178,7 +178,7 @@ CipServiceResponse ConnectionManagerObject::process_forward_open(
     conn->tto_o_size  = fwd_open.tto_o_params.connection_size;
     conn->transport_class    = fwd_open.transport_class();
     conn->timeout_multiplier = fwd_open.connection_timeout_multiplier;
-    conn->state              = ConnectionState::Established;
+    conn->state.store(ConnectionState::Established);
 
     if (!path_result.safety_segment.empty()) {
         conn->is_safety           = true;

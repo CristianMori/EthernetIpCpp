@@ -111,8 +111,9 @@ void VirtualDevice::on_connection_ready(IoConnection& conn) {
 }
 
 void VirtualDevice::produce_io_data(IoConnection& conn) {
-    if (conn.state != ConnectionState::Established) return;
-    if (!conn.remote_endpoint_set) return;
+    if (conn.state.load() != ConnectionState::Established) return;
+    auto [host, port, is_set] = conn.get_remote_endpoint();
+    if (!is_set) return;
     auto* assembly = assemblies_.get_assembly(conn.produced_assembly_instance);
     if (assembly == nullptr) return;
 
@@ -120,8 +121,8 @@ void VirtualDevice::produce_io_data(IoConnection& conn) {
     int io_size = is_class1 ? 2 + assembly->data_size() : assembly->data_size();
     std::vector<uint8_t> io_data(io_size);
     if (is_class1) {
-        conn.cip_sequence_count = static_cast<uint16_t>(conn.cip_sequence_count + 1);
-        ser::write_uint(io_data, conn.cip_sequence_count);
+        uint16_t seq = conn.cip_sequence_count.fetch_add(1) + 1;
+        ser::write_uint(io_data, seq);
         assembly->copy_data_to(std::span<uint8_t>(io_data).subspan(2));
     } else {
         assembly->copy_data_to(io_data);
@@ -146,20 +147,24 @@ void VirtualDevice::on_remote_endpoint_updated(IoConnection&, const IpEndpoint&)
 
 void VirtualDevice::send_udp_io_data(IoConnection& conn,
                                        std::span<const uint8_t> data) {
-    if (!udp_transport_ || !conn.remote_endpoint_set) return;
+    if (!udp_transport_) return;
+    auto [host, port, is_set] = conn.get_remote_endpoint();
+    if (!is_set) return;
     tto_o_send_count_.fetch_add(1, std::memory_order_relaxed);
+    uint32_t seq = conn.encapsulation_sequence_number.fetch_add(1);
     udp_transport_->send_io_data(
-        IpEndpoint{conn.remote_host, conn.remote_port},
+        IpEndpoint{std::move(host), port},
         conn.tto_o_connection_id,
-        conn.encapsulation_sequence_number,
+        seq,
         data);
-    conn.encapsulation_sequence_number++;
 }
 
 // ---- Private ---------------------------------------------------------------
 
 void VirtualDevice::on_connection_established(IoConnection& conn) {
-    conn.last_received = std::chrono::steady_clock::now();
+    conn.last_received.store(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     if (!conn.config_data.empty() && conn.config_assembly_instance != 0) {
         if (auto* asm_inst = assemblies_.get_assembly(conn.config_assembly_instance)) {
             asm_inst->set_data(conn.config_data);
@@ -173,10 +178,10 @@ void VirtualDevice::on_connection_opened_from_adapter(
     // The adapter just sent a successful Forward Open response. Match the
     // newest connection (no remote endpoint yet) to this PLC and stash it.
     for (auto& conn : connection_manager_.active_connections()) {
-        if (!conn->remote_endpoint_set) {
-            conn->remote_host = plc_udp.host;
-            conn->remote_port = plc_udp.port;
-            conn->remote_endpoint_set = true;
+        auto [h, p, is_set] = conn->get_remote_endpoint();
+        (void)h; (void)p;
+        if (!is_set) {
+            conn->set_remote_endpoint(plc_udp.host, plc_udp.port);
             break;
         }
     }
@@ -190,19 +195,20 @@ void VirtualDevice::on_udp_message(std::unique_ptr<messages::Message> msg) {
     // the lookup and handle_received_io_data, but as long as this
     // shared_ptr is live the IoConnection cannot destruct.
     auto conn = connection_manager_.find_by_oto_t_id(cpf.connection_id);
-    if (!conn || conn->state != ConnectionState::Established) return;
+    if (!conn || conn->state.load() != ConnectionState::Established) return;
 
     // Learn / update the scanner's UDP sender endpoint — the originator
     // typically sends from a port other than 2222.
-    if (!conn->remote_endpoint_set || conn->remote_port != cpf.remote_endpoint.port) {
-        conn->remote_host = cpf.remote_endpoint.host;
-        conn->remote_port = cpf.remote_endpoint.port;
-        conn->remote_endpoint_set = true;
+    auto [host, port, is_set] = conn->get_remote_endpoint();
+    if (!is_set || port != cpf.remote_endpoint.port) {
+        conn->set_remote_endpoint(cpf.remote_endpoint.host, cpf.remote_endpoint.port);
         on_remote_endpoint_updated(*conn, cpf.remote_endpoint);
     }
 
-    conn->last_received = std::chrono::steady_clock::now();
-    conn->first_received = true;
+    conn->last_received.store(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    conn->first_received.store(true);
     handle_received_io_data(*conn, cpf.payload);
 }
 
@@ -237,7 +243,7 @@ void VirtualDevice::start_production_thread(IoConnection& conn) {
                 // underneath us mid-call.
                 auto conn = conn_weak.lock();
                 if (!conn) break;
-                if (conn->state != ConnectionState::Established) break;
+                if (conn->state.load() != ConnectionState::Established) break;
                 produce_io_data(*conn);
                 next_send += interval;
                 // If we've fallen more than one period behind, re-anchor to
@@ -288,13 +294,13 @@ void VirtualDevice::watchdog_loop() {
     while (watchdog_running_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(50ms);
         if (!watchdog_running_.load(std::memory_order_relaxed)) break;
-        auto now = std::chrono::steady_clock::now();
+        int64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
         for (auto& conn : connection_manager_.active_connections()) {
-            if (conn->state != ConnectionState::Established) continue;
+            if (conn->state.load() != ConnectionState::Established) continue;
             if (conn->oto_t_rpi == 0) continue;   // T->O-only connection has no inbound watchdog
-            if (!conn->first_received) continue;  // CIP Vol 1 §3-4.5.2: don't count until first frame
-            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                now - conn->last_received).count();
+            if (!conn->first_received.load()) continue;  // CIP Vol 1 §3-4.5.2: don't count until first frame
+            int64_t elapsed = now_us - conn->last_received.load();
             if (elapsed > conn->connection_timeout_us()) {
                 connection_manager_.timeout_connection(*conn);
             }

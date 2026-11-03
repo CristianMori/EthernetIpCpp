@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
     device.connection_manager().on_connection_removed.push_back(
         [](connections::IoConnection& c) {
             log_line("[CONN]", "close serial=0x%04X state=%d",
-                      c.connection_serial_number, static_cast<int>(c.state));
+                      c.connection_serial_number, static_cast<int>(c.state.load()));
         });
 
     device.start();

@@ -229,7 +229,7 @@ void SafetyDevice::on_connection_ready(IoConnection& conn) {
 
 void SafetyDevice::produce_io_data(IoConnection& conn) {
     if (!conn.is_safety) { VirtualDevice::produce_io_data(conn); return; }
-    if (conn.state != ConnectionState::Established) return;
+    if (conn.state.load() != ConnectionState::Established) return;
 
     auto* assembly = assemblies().get_assembly(conn.produced_assembly_instance);
     if (assembly == nullptr) return;
@@ -242,18 +242,18 @@ void SafetyDevice::produce_io_data(IoConnection& conn) {
     if (conn.tto_o_size != base_size && conn.tto_o_size != ext_size) return;
 
     SafetyFormat format = (conn.safety_format == 0x02) ? SafetyFormat::Extended : SafetyFormat::Base;
-    bool consumer_active = conn.safety_consumer_active;
+    bool consumer_active = conn.safety_consumer_active.load();
     bool run_idle = consumer_active;
 
     uint16_t timestamp = 0;
     if (consumer_active) {
         int64_t now_ticks = now_us();
-        conn.safety_last_frame_sent_ticks = now_ticks;
+        conn.safety_last_frame_sent_ticks.store(now_ticks);
         int64_t elapsed_us = now_ticks - conn.safety_production_start_ticks;
         int64_t raw_ticks  = static_cast<int64_t>(conn.safety_initial_timestamp)
                                 + elapsed_us / 128;
         uint16_t raw_timestamp = static_cast<uint16_t>(raw_ticks & 0xFFFF);
-        conn.safety_last_produced_timestamp = raw_timestamp;
+        conn.safety_last_produced_timestamp.store(raw_timestamp);
 
         // Slew the applied CTCV toward the goal: step = max(1, remaining/8).
         uint16_t goal    = conn.safety_consumer_time_correction_goal;
@@ -291,10 +291,10 @@ void SafetyDevice::produce_io_data(IoConnection& conn) {
         }
 
         timestamp = static_cast<uint16_t>(corrected_ticks & 0xFFFF);
-        conn.safety_timestamp = timestamp;
+        conn.safety_timestamp.store(timestamp);
         conn.safety_last_sent_ticks = corrected_ticks;
-        conn.safety_rollover_count = static_cast<uint16_t>(
-            conn.safety_initial_rollover_value + (corrected_ticks >> 16));
+        conn.safety_rollover_count.store(static_cast<uint16_t>(
+            conn.safety_initial_rollover_value + (corrected_ticks >> 16)));
     }
 
     if (consumer_active) {
@@ -321,7 +321,7 @@ void SafetyDevice::produce_io_data(IoConnection& conn) {
     int safety_len = frame_codec::encode(
         safety_buf, asm_data, format, mode, timestamp,
         conn.safety_pid_seed_s1, conn.safety_pid_seed_s3, conn.safety_pid_seed_s5,
-        conn.safety_rollover_count);
+        conn.safety_rollover_count.load());
     if (safety_len > 0) {
         send_udp_io_data(conn, std::span<const uint8_t>(safety_buf.data(), safety_len));
     }
@@ -335,10 +335,10 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
 
     // ---- TCOO branch (5 or 6 bytes) ----
     if (wire_size == 5 || wire_size == 6) {
-        if (!conn.safety_consumer_active) {
-            conn.safety_consumer_active = true;
-            conn.safety_timestamp       = conn.safety_initial_timestamp;
-            conn.safety_rollover_count  = conn.safety_initial_rollover_value;
+        if (!conn.safety_consumer_active.load()) {
+            conn.safety_consumer_active.store(true);
+            conn.safety_timestamp.store(conn.safety_initial_timestamp);
+            conn.safety_rollover_count.store(conn.safety_initial_rollover_value);
             conn.safety_production_start_ticks = now_us();
         }
         if (data.size() < 3) return;
@@ -348,8 +348,9 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
         // Outlier check: reject TCOOs that arrived > 2 ms after our last send.
         // (PLC's per-frame CTCV is biased by send-to-arrival delay; a delayed
         // TCOO produces a spurious CTCV jump that can FwdClose the connection.)
-        if (conn.safety_last_frame_sent_ticks != 0) {
-            int64_t send_to_tcoo_us = now_us() - conn.safety_last_frame_sent_ticks;
+        int64_t last_frame_sent = conn.safety_last_frame_sent_ticks.load();
+        if (last_frame_sent != 0) {
+            int64_t send_to_tcoo_us = now_us() - last_frame_sent;
             constexpr int64_t kLateThresholdUs = 2000;
             if (send_to_tcoo_us > kLateThresholdUs) {
                 trace("[TCOO-LATE] conn=%04X ctv=%u sendToTcoo=%lldus (>%lldus) — skipping",
@@ -362,7 +363,7 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
         // Worst_Case_CTCV = consumer_time_value - last_produced_ts - CCC.
         uint16_t worst_case_ctcv = static_cast<uint16_t>(
             consumer_time_value
-            - conn.safety_last_produced_timestamp
+            - conn.safety_last_produced_timestamp.load()
             - conn.safety_connection_correction_constant);
         uint16_t old_ctcv = conn.safety_consumer_time_correction_value;
         int16_t  delta_ctcv = static_cast<int16_t>(worst_case_ctcv - old_ctcv);
@@ -413,14 +414,13 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
     // 0xFFFF -> 0x0000.
     uint16_t incoming_ts = frame_codec::extract_timestamp(data, data_len, format);
     if (!conn.safety_originator_rollover_initialized) {
-        conn.safety_originator_rollover_count = conn.safety_initial_rollover_value;
+        conn.safety_originator_rollover_count.store(conn.safety_initial_rollover_value);
         conn.safety_originator_last_ts        = incoming_ts;
         conn.safety_originator_rollover_initialized = true;
     } else {
         int delta = static_cast<int>(incoming_ts) - static_cast<int>(conn.safety_originator_last_ts);
         if (delta < -0x4000) {
-            conn.safety_originator_rollover_count =
-                static_cast<uint16_t>(conn.safety_originator_rollover_count + 1);
+            conn.safety_originator_rollover_count.fetch_add(1);
         }
         conn.safety_originator_last_ts = incoming_ts;
     }
@@ -429,7 +429,7 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
                                          conn.safety_originator_pid_seed_s1,
                                          conn.safety_originator_pid_seed_s3,
                                          conn.safety_originator_pid_seed_s5,
-                                         conn.safety_originator_rollover_count);
+                                         conn.safety_originator_rollover_count.load());
 
     // IDLE frames before PLC processes our SafetyOpen reply may use
     // rolloverCount=0 (its default) instead of our initial_rollover_value.
@@ -437,7 +437,7 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
     if (!result.crc_valid
         && data_len < static_cast<int>(data.size())
         && (data[data_len] & 0x80) == 0
-        && conn.safety_originator_rollover_count != 0) {
+        && conn.safety_originator_rollover_count.load() != 0) {
         result = frame_codec::decode(data, data_len, format,
                                        conn.safety_originator_pid_seed_s1,
                                        conn.safety_originator_pid_seed_s3,
@@ -473,7 +473,7 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
                 && other->is_safety
                 && other->originator_vendor_id == conn.originator_vendor_id
                 && other->originator_serial_number == conn.originator_serial_number
-                && !other->safety_consumer_active) {
+                && !other->safety_consumer_active.load()) {
                 produce_io_data(*other);
             }
         }
@@ -490,9 +490,7 @@ void SafetyDevice::on_remote_endpoint_updated(IoConnection& conn,
             && other->is_safety
             && other->originator_vendor_id == conn.originator_vendor_id
             && other->originator_serial_number == conn.originator_serial_number) {
-            other->remote_host = sender.host;
-            other->remote_port = sender.port;
-            other->remote_endpoint_set = true;
+            other->set_remote_endpoint(sender.host, sender.port);
         }
     }
 }
