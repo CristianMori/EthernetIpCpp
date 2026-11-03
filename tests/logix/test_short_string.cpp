@@ -167,3 +167,24 @@ TEST(ShortStringTest, HandleWriteTag_WrongTypeCode_Rejected) {
     ASSERT_FALSE(resp.status.additional_status.empty());
     EXPECT_EQ(static_cast<uint16_t>(0x2107), resp.status.additional_status.front());
 }
+
+// A CIP Write_Tag payload can plant any length byte (0..0xFF) at the start
+// of a SHORT_STRING slot — handle_write_tag only validates the type code,
+// not the string's length prefix. If read_sstring trusted that byte, it
+// would read ~0xFF chars past the slot and leak adjacent memory.
+TEST(ShortStringTest, ReadSString_ClampsPlantedLengthByteToSlotCapacity) {
+    TagDatabase db;
+    auto& tag = db.add_tag("names", ldt::ShortString, /*element_count=*/2);
+
+    // Scribble element 1 so the clamp has something distinctive to NOT reveal.
+    tag.write_sstring(1, "SECRET");
+
+    // Plant a bogus 0xFF length into element 0 directly, bypassing
+    // write_sstring's validator — exactly what a hostile Write_Tag does.
+    std::array<uint8_t, 1> poison{0xFF};
+    tag.set_data(poison, /*byte_offset=*/0);
+
+    auto s = tag.read_sstring(0);
+    EXPECT_LE(s.size(), static_cast<size_t>(tag.element_size() - 1));
+    EXPECT_EQ(s.find("SECRET"), std::string::npos);
+}

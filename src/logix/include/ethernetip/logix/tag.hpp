@@ -198,8 +198,16 @@ public:
         }
         int offset = element_index * element_size_;
         int len = data_[offset];
+        // The length byte lives in the tag buffer and may have been planted
+        // by a Write_Tag payload that bypassed the write_sstring validator
+        // (CIP writers set it raw). Clamp to the element slot — never to the
+        // whole buffer, since a lying 0xFF in element N would otherwise bleed
+        // into element N+1 and reveal data from an unrelated string element.
+        int slot_capacity = element_size_ - 1;
+        int take = len < slot_capacity ? len : slot_capacity;
+        if (take < 0) take = 0;
         return std::string(reinterpret_cast<const char*>(data_.data() + offset + 1),
-                            static_cast<size_t>(len));
+                            static_cast<size_t>(take));
     }
 
     /// Write a string into one element of a SHORT_STRING tag. The value must
