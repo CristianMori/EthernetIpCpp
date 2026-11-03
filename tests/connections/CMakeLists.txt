@@ -9,3 +9,7 @@ ethernetip_add_test(test_connection_path_parser
 ethernetip_add_test(test_connection_manager
     SOURCES test_connection_manager.cpp
     LIBS    ethernetip::connections)
+
+ethernetip_add_test(test_connection_lifetime
+    SOURCES test_connection_lifetime.cpp
+    LIBS    ethernetip::connections)
