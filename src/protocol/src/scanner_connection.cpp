@@ -74,18 +74,26 @@ void ScannerConnection::production_loop() {
         try {
             uint32_t seq = encap_seq_num_.fetch_add(1) + 1;
 
+            // Build the frame under buf_mu_, then release the mutex
+            // BEFORE calling send_io_data. The UDP send holds a socket
+            // write and can block (slow link, full send buffer); any
+            // other writer touching consumed_data_ via set_consumed_data
+            // would be stalled behind that network wait with the lock
+            // held.
             std::vector<uint8_t> frame;
-            std::scoped_lock lock(buf_mu_);
-            if (config_.is_class1()) {
-                uint16_t cip_seq = cip_seq_count_.fetch_add(1) + 1;
-                frame.resize(2u + 4u + consumed_data_.size());
-                ser::write_uint (frame, cip_seq);
-                ser::write_udint(std::span<uint8_t>(frame).subspan(2), 0x00000001u);  // RUN
-                if (!consumed_data_.empty()) {
-                    std::memcpy(frame.data() + 6, consumed_data_.data(), consumed_data_.size());
+            {
+                std::scoped_lock lock(buf_mu_);
+                if (config_.is_class1()) {
+                    uint16_t cip_seq = cip_seq_count_.fetch_add(1) + 1;
+                    frame.resize(2u + 4u + consumed_data_.size());
+                    ser::write_uint (frame, cip_seq);
+                    ser::write_udint(std::span<uint8_t>(frame).subspan(2), 0x00000001u);  // RUN
+                    if (!consumed_data_.empty()) {
+                        std::memcpy(frame.data() + 6, consumed_data_.data(), consumed_data_.size());
+                    }
+                } else {
+                    frame = consumed_data_;
                 }
-            } else {
-                frame = consumed_data_;
             }
             udp_.send_io_data(target_endpoint_, oto_t_connection_id_, seq, frame);
             send_count_.fetch_add(1);
