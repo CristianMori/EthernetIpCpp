@@ -6,13 +6,22 @@
 namespace ethernetip::cip::serializer {
 
 std::string read_short_string(std::span<const uint8_t> src) {
+    if (src.empty()) return {};
     uint8_t len = src[0];
-    return std::string(reinterpret_cast<const char*>(src.data() + 1), len);
+    // Clamp to what src actually holds. The length byte is untrusted on
+    // the wire; without this check a 0xFF prefix with a short span would
+    // read past the end. Matches write_short_string's silent-clamp style.
+    size_t available = src.size() - 1;
+    size_t take = len <= available ? len : available;
+    return std::string(reinterpret_cast<const char*>(src.data() + 1), take);
 }
 
 std::string read_string(std::span<const uint8_t> src) {
+    if (src.size() < 2) return {};
     uint16_t len = read_uint(src);
-    return std::string(reinterpret_cast<const char*>(src.data() + 2), len);
+    size_t available = src.size() - 2;
+    size_t take = len <= available ? len : available;
+    return std::string(reinterpret_cast<const char*>(src.data() + 2), take);
 }
 
 int write_short_string(std::span<uint8_t> dst, std::string_view value) {
