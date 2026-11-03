@@ -31,6 +31,23 @@ SafetyNetworkSegment::parse(std::span<const uint8_t> data) {
         throw std::invalid_argument("Safety segment buffer too small");
     }
 
+    // Enforce format-specific minimum before we read at hard-coded offsets
+    // below. data_len_words is wire-controlled, and a too-small total would
+    // let the format-0x00 / 0x02 branch read up to ~52 bytes past the end
+    // of the buffer. CPCRC would still ultimately reject the connection,
+    // but the OOB read must not happen first.
+    size_t required = 0;
+    switch (format) {
+        case 0x00: required = 56; break;  // Target
+        case 0x01: required = 14; break;  // Originator / Router
+        case 0x02: required = 62; break;  // Extended Target
+        default:
+            throw std::invalid_argument("Safety segment: unknown format");
+    }
+    if (total < required) {
+        throw std::invalid_argument("Safety segment: data_len_words too small for format");
+    }
+
     SafetyNetworkSegment seg;
     seg.format = format;
 

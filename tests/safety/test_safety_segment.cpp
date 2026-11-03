@@ -80,3 +80,42 @@ TEST(SafetyNetworkSegmentTest, RejectsTruncated) {
     std::span<const uint8_t> short_buf(wire.data(), 20);
     EXPECT_THROW({ (void)SafetyNetworkSegment::parse(short_buf); }, std::invalid_argument);
 }
+
+// Regression: wire-controlled data_len_words with a format that would read
+// past the declared total. 0x02 (Extended) reads out to offset 62; a buffer
+// that satisfies `size >= 2 + data_len_words*2` but is still shorter than
+// the format's minimum must be rejected before any OOB read.
+TEST(SafetyNetworkSegmentTest, RejectsExtendedFormatWithShortDataLen) {
+    // segment_type, data_len_words=4 (→ total=10), format=0x02, pad=0, then
+    // 6 bytes of filler so size() == total.
+    std::array<uint8_t, 10> buf{
+        SafetyNetworkSegment::SegmentType, 0x04, 0x02, 0x00,
+        0, 0, 0, 0, 0, 0,
+    };
+    EXPECT_THROW({ (void)SafetyNetworkSegment::parse(buf); }, std::invalid_argument);
+}
+
+TEST(SafetyNetworkSegmentTest, RejectsTargetFormatWithShortDataLen) {
+    // format=0x00 needs total >= 56; declare total=10 instead.
+    std::array<uint8_t, 10> buf{
+        SafetyNetworkSegment::SegmentType, 0x04, 0x00, 0x00,
+        0, 0, 0, 0, 0, 0,
+    };
+    EXPECT_THROW({ (void)SafetyNetworkSegment::parse(buf); }, std::invalid_argument);
+}
+
+TEST(SafetyNetworkSegmentTest, RejectsRouterFormatWithShortDataLen) {
+    // format=0x01 needs total >= 14; declare total=4 instead.
+    std::array<uint8_t, 4> buf{
+        SafetyNetworkSegment::SegmentType, 0x01, 0x01, 0x00,
+    };
+    EXPECT_THROW({ (void)SafetyNetworkSegment::parse(buf); }, std::invalid_argument);
+}
+
+TEST(SafetyNetworkSegmentTest, RejectsUnknownFormat) {
+    std::array<uint8_t, 10> buf{
+        SafetyNetworkSegment::SegmentType, 0x04, 0x7F, 0x00,
+        0, 0, 0, 0, 0, 0,
+    };
+    EXPECT_THROW({ (void)SafetyNetworkSegment::parse(buf); }, std::invalid_argument);
+}
