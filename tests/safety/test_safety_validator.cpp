@@ -40,3 +40,24 @@ TEST(SafetyValidatorTest, GetInstanceFindsCreated) {
     EXPECT_EQ(a, b);
     EXPECT_EQ(nullptr, v.get_instance(999));
 }
+
+// Regression: FwdOpen+FwdClose cycles must not leak validator entries
+// (previously instances_ grew unbounded and the raw IoConnection*
+// pointers in released entries dangled past their owners).
+TEST(SafetyValidatorTest, RemoveInstanceByConnectionDoesNotLeakAcrossReopens) {
+    SafetyValidatorObject v;
+    EXPECT_EQ(0u, v.instance_count());
+    for (int i = 0; i < 10; ++i) {
+        IoConnection conn;
+        auto* inst = v.create_instance(conn);
+        ASSERT_NE(nullptr, inst);
+        EXPECT_EQ(1u, v.instance_count());
+        EXPECT_TRUE(v.remove_instance_by_connection(&conn));
+        EXPECT_EQ(0u, v.instance_count());
+        // Removed instance must be gone from the lookup table.
+        EXPECT_EQ(nullptr, v.get_instance(inst->instance_id));
+    }
+    // Second remove is a no-op (reverse map already drained).
+    IoConnection sentinel;
+    EXPECT_FALSE(v.remove_instance_by_connection(&sentinel));
+}

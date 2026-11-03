@@ -42,6 +42,11 @@ CipInstance* CipClass::get_instance(uint32_t instance_id) {
     return it == instances_.end() ? nullptr : it->second.get();
 }
 
+bool CipClass::remove_instance(uint32_t instance_id) {
+    if (instance_id == 0) return false;  // class instance is embedded
+    return instances_.erase(instance_id) > 0;
+}
+
 void CipClass::update_max_instance(uint32_t instance_id) {
     if (instance_id <= max_instance_id_) return;
     max_instance_id_ = instance_id;

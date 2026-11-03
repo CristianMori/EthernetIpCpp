@@ -36,6 +36,11 @@ public:
     /// Returns nullptr if the instance does not exist.
     [[nodiscard]] CipInstance* get_instance(uint32_t instance_id);
 
+    /// Remove and destroy the instance with the given ID. No-op for 0 (the
+    /// class instance is embedded) or for IDs that are not registered.
+    /// Returns true if an instance was actually removed.
+    bool remove_instance(uint32_t instance_id);
+
     [[nodiscard]] const std::unordered_map<uint32_t, std::unique_ptr<CipInstance>>&
         instances() const noexcept { return instances_; }
 

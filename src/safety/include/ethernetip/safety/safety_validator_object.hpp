@@ -60,6 +60,17 @@ public:
     /// Look up an existing instance by ID. Returns nullptr if not found.
     [[nodiscard]] SafetyValidatorInstance* get_instance(uint32_t instance_id);
 
+    /// Drop the validator instance for the given safety connection, if any.
+    /// Also drops the backing CIP instance from the Safety Validator class
+    /// so instance IDs don't leak after FwdClose. Returns true if an entry
+    /// was removed. Must be called whenever an IoConnection registered with
+    /// create_instance() is being destroyed — the connection pointer stored
+    /// in the validator would otherwise dangle.
+    bool remove_instance_by_connection(const connections::IoConnection* connection);
+
+    /// Current number of live validator instances. Primarily for tests.
+    [[nodiscard]] std::size_t instance_count() const noexcept { return instances_.size(); }
+
 private:
     std::unique_ptr<cip::CipClass> cip_class_;
     /// Non-owning pointer captured before `release_cip_class()` hands ownership
@@ -68,6 +79,10 @@ private:
     cip::CipClass* cip_class_ptr_ = nullptr;
     uint32_t next_instance_id_ = 0;
     std::unordered_map<uint32_t, std::unique_ptr<SafetyValidatorInstance>> instances_;
+    /// Reverse index — IoConnection* back to the owning instance id. Kept
+    /// in lockstep with instances_ so FwdClose can find and clear the entry
+    /// before the connection it points at is destroyed.
+    std::unordered_map<const connections::IoConnection*, uint32_t> conn_to_instance_;
 };
 
 } // namespace ethernetip::safety

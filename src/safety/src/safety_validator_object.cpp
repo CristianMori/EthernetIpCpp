@@ -51,12 +51,36 @@ SafetyValidatorInstance* SafetyValidatorObject::create_instance(
 
     SafetyValidatorInstance* raw = validator.get();
     instances_[next_instance_id_] = std::move(validator);
+    conn_to_instance_[&connection] = next_instance_id_;
     return raw;
 }
 
 SafetyValidatorInstance* SafetyValidatorObject::get_instance(uint32_t instance_id) {
     auto it = instances_.find(instance_id);
     return it == instances_.end() ? nullptr : it->second.get();
+}
+
+bool SafetyValidatorObject::remove_instance_by_connection(
+        const connections::IoConnection* connection) {
+    if (connection == nullptr) return false;
+    auto rit = conn_to_instance_.find(connection);
+    if (rit == conn_to_instance_.end()) return false;
+    uint32_t instance_id = rit->second;
+    conn_to_instance_.erase(rit);
+
+    // Null out the connection pointer first so any late reference through
+    // the CIP instance's user_data (prior to the erase below) can't follow
+    // a dangling IoConnection* once the connection manager destroys it.
+    if (auto it = instances_.find(instance_id); it != instances_.end()) {
+        it->second->connection = nullptr;
+    }
+
+    // Drop the backing CIP instance so its ID doesn't leak either.
+    if (cip_class_ptr_ != nullptr) {
+        cip_class_ptr_->remove_instance(instance_id);
+    }
+    instances_.erase(instance_id);
+    return true;
 }
 
 } // namespace ethernetip::safety

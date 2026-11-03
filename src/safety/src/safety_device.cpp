@@ -512,6 +512,12 @@ void SafetyDevice::send_time_coordination(IoConnection& conn) {
 
 void SafetyDevice::on_connection_removed(IoConnection& conn) {
     if (!conn.is_safety) return;
+    // Drop the validator instance for this connection so the Safety
+    // Validator object doesn't leak IDs across open/close cycles and
+    // doesn't retain a raw IoConnection* that will dangle once the
+    // connection manager destroys this connection.
+    validator_->remove_instance_by_connection(&conn);
+
     // If the last safety connection just closed, clear the SCID + CFUNID on
     // the supervisor so the next FwdOpen is treated as fresh.
     bool any_safety_left = false;
