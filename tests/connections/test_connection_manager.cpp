@@ -101,6 +101,79 @@ TEST(ConnectionManagerTest, ForwardCloseRemovesConnection) {
     EXPECT_TRUE(mgr.active_connections().empty());
 }
 
+TEST(ConnectionManagerTest, UnconnectedSendDepthCapped) {
+    // A hostile client nests Unconnected_Send inside Unconnected_Send to
+    // blow the C stack through the dispatch call chain. Without a depth
+    // cap this crashes the process. With the cap, the server returns the
+    // nested dispatch's cap-exceeded error (service not supported) and
+    // the stack stays bounded.
+    ConnectionManagerObject mgr;
+
+    // dispatch_request routes UCS back into the handler, so a nested UCS
+    // MR re-enters handle_unconnected_send exactly as it would through
+    // the real dispatcher in VirtualDevice.
+    const auto* ucs_svc = mgr.cip_class().get_instance_service(
+                                ConnectionManagerObject::UnconnectedSendService);
+    ASSERT_NE(nullptr, ucs_svc);
+    auto& ucs_inst = *mgr.cip_class().get_instance(1);
+
+    mgr.dispatch_request = [&](uint8_t service_code, const CipPath&,
+                                 std::span<const uint8_t> data) -> CipServiceResponse {
+        if (service_code == ConnectionManagerObject::UnconnectedSendService) {
+            std::vector<uint8_t> buf(data.begin(), data.end());
+            return ucs_svc->handler(
+                ucs_inst,
+                CipServiceRequest{ConnectionManagerObject::UnconnectedSendService,
+                                    CipPath{}, buf});
+        }
+        // Innermost echo — succeed cleanly so the only possible failure
+        // route is the depth cap.
+        return CipServiceResponse::success(service_code, {});
+    };
+
+    // MR of service 0x52 at class 6 instance 1, carrying `data` payload.
+    auto make_ucs_mr = [](const std::vector<uint8_t>& data) {
+        std::vector<uint8_t> mr;
+        mr.push_back(0x52);                       // service
+        mr.push_back(0x02);                       // path size words
+        mr.insert(mr.end(), {0x20, 0x06, 0x24, 0x01});  // class 6 inst 1
+        mr.insert(mr.end(), data.begin(), data.end());
+        return mr;
+    };
+    // UCS data payload: priority/time_tick + timeout_ticks + msg_len + embedded_mr.
+    auto make_ucs_data = [](const std::vector<uint8_t>& embedded_mr) {
+        std::vector<uint8_t> d;
+        d.push_back(0x05);
+        d.push_back(0x9C);
+        uint16_t len = static_cast<uint16_t>(embedded_mr.size());
+        d.push_back(static_cast<uint8_t>(len & 0xFF));
+        d.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
+        d.insert(d.end(), embedded_mr.begin(), embedded_mr.end());
+        return d;
+    };
+
+    // Innermost MR: Get_Attribute_Single on class 1 inst 1 attr 1 — never
+    // actually reached because the dispatch lambda intercepts UCS; even if
+    // it were, the lambda returns success for anything non-UCS.
+    std::vector<uint8_t> innermost_mr = {0x0E, 0x03, 0x20, 0x01, 0x24, 0x01, 0x30, 0x01};
+
+    // Build a 10-level-deep UCS chain, inside out.
+    std::vector<uint8_t> data = make_ucs_data(innermost_mr);
+    for (int i = 1; i < 10; ++i) {
+        data = make_ucs_data(make_ucs_mr(data));
+    }
+
+    auto resp = ucs_svc->handler(
+        ucs_inst,
+        CipServiceRequest{ConnectionManagerObject::UnconnectedSendService,
+                            CipPath{}, data});
+
+    // Depth cap must have fired — the top-level handler returns the nested
+    // dispatch's error unchanged, which is Service Not Supported (0x08).
+    EXPECT_FALSE(resp.status.is_success());
+    EXPECT_EQ(CipStatus::ServiceNotSupported, resp.status.general_status);
+}
+
 TEST(ConnectionManagerTest, RejectsMissingAssembly) {
     ConnectionManagerObject mgr;
     mgr.validate_assembly = [](uint32_t) { return -1; };  // none exist

@@ -1,6 +1,7 @@
 #include "ethernetip/logix/multi_service_handler.hpp"
 
 #include "ethernetip/cip/data_serializer.hpp"
+#include "ethernetip/cip/dispatch_depth.hpp"
 #include "ethernetip/cip/mr_codec.hpp"
 
 namespace ethernetip::logix::multi_service_handler {
@@ -9,27 +10,17 @@ using cip::CipServiceRequest;
 using cip::CipServiceResponse;
 using cip::CipStatus;
 namespace ser = cip::serializer;
-
-namespace {
-// Real clients never nest Multiple_Service_Packet; a hostile client that does
-// can keep each MSP's offset table modest while still blowing the C stack
-// through the dispatch call chain. Three levels is slack for pathological
-// legitimate traffic.
-constexpr int kMaxDepth = 3;
-thread_local int g_depth = 0;
-
-struct DepthGuard {
-    DepthGuard()  { ++g_depth; }
-    ~DepthGuard() { --g_depth; }
-};
-} // namespace
+namespace depth = cip::dispatch_depth;
 
 CipServiceResponse handle(cip::ICipDispatch& dispatch, const CipServiceRequest& request) {
-    if (g_depth >= kMaxDepth) {
+    // Shared with Unconnected_Send and any other re-entrant service — a
+    // UCS→MSP→UCS→... chain exhausts the C stack just as surely as a pure
+    // MSP→MSP chain, so one counter covers the whole combined call chain.
+    if (depth::exceeded()) {
         return CipServiceResponse::error(request.service_code,
                                           CipStatus::error(CipStatus::ServiceNotSupported));
     }
-    DepthGuard depth_guard;
+    depth::Guard depth_guard;
 
     if (request.data.size() < 2) {
         return CipServiceResponse::error(request.service_code, CipStatus::error(0x13));

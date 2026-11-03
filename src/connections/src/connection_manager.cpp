@@ -1,6 +1,7 @@
 #include "ethernetip/connections/connection_manager.hpp"
 
 #include "ethernetip/cip/data_serializer.hpp"
+#include "ethernetip/cip/dispatch_depth.hpp"
 #include "ethernetip/cip/mr_codec.hpp"
 #include "ethernetip/cip/standard_services.hpp"
 #include "ethernetip/connections/connection_path_parser.hpp"
@@ -276,7 +277,19 @@ CipServiceResponse ConnectionManagerObject::handle_forward_close(
 
 CipServiceResponse ConnectionManagerObject::handle_unconnected_send(
         CipInstance&, const CipServiceRequest& request) {
-    namespace ser = ethernetip::cip::serializer;
+    namespace ser   = ethernetip::cip::serializer;
+    namespace depth = ethernetip::cip::dispatch_depth;
+
+    // Shared with Multiple_Service_Packet — a hostile client can nest UCS
+    // in UCS to depth ~6500 inside a single 65 KB request and blow the C
+    // stack through the dispatch call chain, even without ever touching
+    // MSP. One counter covers UCS→UCS, UCS→MSP→UCS, and any other mix.
+    if (depth::exceeded()) {
+        return CipServiceResponse::error(request.service_code,
+            CipStatus::error(CipStatus::ServiceNotSupported));
+    }
+    depth::Guard depth_guard;
+
     if (!dispatch_request) {
         return CipServiceResponse::error(request.service_code,
             CipStatus::error(CipStatus::ServiceNotSupported));
