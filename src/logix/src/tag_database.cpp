@@ -135,6 +135,13 @@ Tag& TagDatabase::register_tag(std::unique_ptr<Tag> tag) {
     // Hold the lock across the duplicate check and both inserts; the
     // tag_added_ subscribers (gap 7) still see a fully-registered tag
     // because they run after both tables are populated.
+    //
+    // Snapshot tag_added_ under the same lock so a concurrent
+    // add_tag_added_handler() can't reallocate the vector mid-iteration
+    // (UB). Handlers themselves still run OUTSIDE the lock — preserves the
+    // "no re-entry into the database under its mutex" invariant from the
+    // register_tag race fix in 6a16b9a.
+    std::vector<TagAddedHandler> handlers_snapshot;
     {
         std::scoped_lock lock(mu_);
         if (by_name_lower_.find(key) != by_name_lower_.end()) {
@@ -142,8 +149,9 @@ Tag& TagDatabase::register_tag(std::unique_ptr<Tag> tag) {
         }
         by_instance_id_[tag->instance_id()] = view;
         by_name_lower_[std::move(key)] = std::move(tag);
+        handlers_snapshot = tag_added_;
     }
-    for (auto& h : tag_added_) h(*view);
+    for (auto& h : handlers_snapshot) h(*view);
     return *view;
 }
 

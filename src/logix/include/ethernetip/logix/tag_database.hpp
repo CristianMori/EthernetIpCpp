@@ -150,7 +150,13 @@ public:
     void disable_dirty_tracking() { dirty_tracking_ = false; dirty_.clear(); }
     [[nodiscard]] std::vector<uint32_t> drain_dirty();
 
-    void add_tag_added_handler        (TagAddedHandler h)         { tag_added_.push_back(std::move(h)); }
+    void add_tag_added_handler(TagAddedHandler h) {
+        // Guard against concurrent registration while register_tag() is
+        // snapshotting the list for out-of-lock dispatch — an unguarded
+        // push_back racing with a vector read is UB (reallocation).
+        std::scoped_lock lock(mu_);
+        tag_added_.push_back(std::move(h));
+    }
     void add_template_added_handler   (TemplateAddedHandler h)    { template_added_.push_back(std::move(h)); }
     void add_any_tag_changed_handler  (AnyTagChangedHandler h)    { any_tag_changed_.push_back(std::move(h)); }
 
