@@ -272,8 +272,8 @@ CipServiceResponse LogixDispatcher::dispatch_tag_service(Tag& tag, uint8_t servi
     switch (service_code) {
         case tag_services::ReadTag:            return tag_services::handle_read_tag(tag, service_code, data, element_offset);
         case tag_services::WriteTag:           return tag_services::handle_write_tag(tag, service_code, data, element_offset);
-        case tag_services::ReadTagFragmented:  return tag_services::handle_read_tag_fragmented(tag, service_code, data);
-        case tag_services::WriteTagFragmented: return tag_services::handle_write_tag_fragmented(tag, service_code, data);
+        case tag_services::ReadTagFragmented:  return tag_services::handle_read_tag_fragmented(tag, service_code, data, element_offset);
+        case tag_services::WriteTagFragmented: return tag_services::handle_write_tag_fragmented(tag, service_code, data, element_offset);
         case tag_services::ReadModifyWrite:    return tag_services::handle_read_modify_write(tag, service_code, data);
         default:                                return CipServiceResponse::error(service_code,
                                                           CipStatus::error(CipStatus::ServiceNotSupported));

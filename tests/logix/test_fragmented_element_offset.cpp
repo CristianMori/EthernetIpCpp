@@ -112,6 +112,54 @@ TEST(FragmentedElementOffsetTest, SymbolObject_FragmentedWrite_HonorsElementSegm
     EXPECT_EQ(0,    tag.read<int32_t>(8 * 4));
 }
 
+// The symbolic-name dispatch path in LogixDispatcher::on_unhandled resolves
+// path.element_id into an element offset and hands it to dispatch_tag_service.
+// Fragmented services (0x52 / 0x53) used to drop that offset on the floor,
+// so a fragmented read of MyArray[N] via a bare symbolic-name path read
+// from element 0 instead of element N.
+TEST(FragmentedElementOffsetTest, SymbolicNamePath_FragmentedRead_HonorsElementId) {
+    LogixDispatcher disp;
+    auto& tag = disp.tags().add_tag("counts", ldt::Dint, /*element_count=*/10);
+    for (int i = 0; i < 10; ++i) tag.write<int32_t>(i * 4, 500 + i);
+
+    ethernetip::cip::CipPath p;
+    p.symbolic_name = std::string("counts");
+    p.element_id    = 5u;
+
+    auto req  = fragmented_read_body(/*element_count=*/1, /*byte_offset=*/0);
+    auto resp = disp.dispatch(tag_services::ReadTagFragmented, p, req);
+
+    ASSERT_TRUE(resp.status.is_success())
+        << "general_status=0x" << std::hex
+        << static_cast<unsigned>(resp.status.general_status);
+    ASSERT_GE(resp.data.size(), 6u);
+    EXPECT_EQ(ldt::Dint, ser::read_uint(resp.data));
+    EXPECT_EQ(505u, ser::read_udint(std::span<const uint8_t>(resp.data).subspan(2)));
+}
+
+TEST(FragmentedElementOffsetTest, SymbolicNamePath_FragmentedWrite_HonorsElementId) {
+    LogixDispatcher disp;
+    auto& tag = disp.tags().add_tag("counts", ldt::Dint, /*element_count=*/10);
+
+    ethernetip::cip::CipPath p;
+    p.symbolic_name = std::string("counts");
+    p.element_id    = 7u;
+
+    std::array<uint8_t, 4> payload{};
+    int32_t v = 9999;
+    std::memcpy(payload.data(), &v, 4);
+    auto req  = fragmented_write_body(ldt::Dint, /*element_count=*/1,
+                                       /*byte_offset=*/0, payload);
+    auto resp = disp.dispatch(tag_services::WriteTagFragmented, p, req);
+
+    ASSERT_TRUE(resp.status.is_success())
+        << "general_status=0x" << std::hex
+        << static_cast<unsigned>(resp.status.general_status);
+    EXPECT_EQ(9999, tag.read<int32_t>(7 * 4));
+    EXPECT_EQ(0,    tag.read<int32_t>(6 * 4));
+    EXPECT_EQ(0,    tag.read<int32_t>(8 * 4));
+}
+
 TEST(FragmentedElementOffsetTest, SymbolObject_FragmentedRead_ParityWithAtomicReadTag) {
     LogixDispatcher disp;
     auto& tag = disp.tags().add_tag("counts", ldt::Dint, /*element_count=*/10);
