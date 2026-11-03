@@ -123,23 +123,27 @@ Tag& TagDatabase::add_tag(std::string name, const TemplateDefinition& tmpl, int 
 Tag& TagDatabase::register_tag(std::unique_ptr<Tag> tag) {
     Tag* view = tag.get();
     std::string key = lower(tag->name());
-    // Order matters (gap 7): publish to by_instance_id_ and fire TagAdded
-    // BEFORE by_name_lower_ so a concurrent lookup by instance sees a
-    // fully-registered tag even during the on_tag_added subscribers' work.
+    view->add_value_changed_handler(
+        [this](const Tag& t, TagChangeInfo info) { fire_any_tag_changed(t, info); });
+    // Both inserts must happen atomically. The earlier split (insert into
+    // by_instance_id_, release lock, fire TagAdded, re-acquire lock, insert
+    // into by_name_lower_) raced on concurrent duplicate names: two threads
+    // could each publish a distinct Tag* to by_instance_id_, then the later
+    // operator[] in by_name_lower_ would destroy the first thread's
+    // unique_ptr while by_instance_id_ still pointed at it (dangling view).
+    //
+    // Hold the lock across the duplicate check and both inserts; the
+    // tag_added_ subscribers (gap 7) still see a fully-registered tag
+    // because they run after both tables are populated.
     {
         std::scoped_lock lock(mu_);
         if (by_name_lower_.find(key) != by_name_lower_.end()) {
             throw std::invalid_argument("Tag already exists: " + tag->name());
         }
         by_instance_id_[tag->instance_id()] = view;
-    }
-    view->add_value_changed_handler(
-        [this](const Tag& t, TagChangeInfo info) { fire_any_tag_changed(t, info); });
-    for (auto& h : tag_added_) h(*view);
-    {
-        std::scoped_lock lock(mu_);
         by_name_lower_[std::move(key)] = std::move(tag);
     }
+    for (auto& h : tag_added_) h(*view);
     return *view;
 }
 
