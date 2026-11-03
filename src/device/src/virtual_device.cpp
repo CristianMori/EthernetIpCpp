@@ -38,6 +38,12 @@ VirtualDevice::VirtualDevice(IdentityInfo identity, std::string bind_address,
         };
     connection_manager_.on_connection_established.push_back(
         [this](IoConnection& conn) { on_connection_established(conn); });
+    // Cancel-and-join the production thread BEFORE the connection manager
+    // drops its shared_ptr. Combined with the weak_ptr the thread captures,
+    // this guarantees the thread cannot be observing the IoConnection by
+    // the time it destructs.
+    connection_manager_.on_connection_removed.push_back(
+        [this](IoConnection& conn) { stop_production_thread(conn.oto_t_connection_id); });
 
     // Register standard CIP classes.
     dispatcher_.register_class(identity_object::create(identity_));
@@ -205,20 +211,33 @@ void VirtualDevice::start_production_thread(IoConnection& conn) {
     std::scoped_lock lock(production_mu_);
     if (production_threads_.count(conn.oto_t_connection_id) != 0) return;
 
+    // Obtain the manager's shared_ptr so the thread can hold a weak_ptr.
+    // If the connection is already gone (e.g. a very fast FwdClose that
+    // raced the on_connection_ready callback), we have nothing to produce.
+    auto conn_sp = connection_manager_.find_by_oto_t_id(conn.oto_t_connection_id);
+    if (!conn_sp) return;
+
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     production_cancel_[conn.oto_t_connection_id] = cancel;
 
-    IoConnection* conn_ptr = &conn;
+    std::weak_ptr<IoConnection> conn_weak = conn_sp;
     int64_t rpi_us = conn.tto_o_rpi;
     production_threads_[conn.oto_t_connection_id] = std::thread(
-        [this, conn_ptr, cancel, rpi_us] {
+        [this, conn_weak, cancel, rpi_us] {
             auto interval = std::chrono::microseconds(rpi_us);
             auto next_send = std::chrono::steady_clock::now() + interval;
             while (!cancel->load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_until(next_send);
                 if (cancel->load(std::memory_order_relaxed)) break;
-                if (conn_ptr->state != ConnectionState::Established) break;
-                produce_io_data(*conn_ptr);
+                // Lock the weak_ptr once per cycle. A null result means the
+                // connection manager has dropped its reference and the
+                // thread exits. A valid lock pins the IoConnection for the
+                // full duration of produce_io_data — it cannot destruct
+                // underneath us mid-call.
+                auto conn = conn_weak.lock();
+                if (!conn) break;
+                if (conn->state != ConnectionState::Established) break;
+                produce_io_data(*conn);
                 next_send += interval;
                 // If we've fallen more than one period behind, re-anchor to
                 // now so we don't burst catch-up frames.
@@ -226,6 +245,26 @@ void VirtualDevice::start_production_thread(IoConnection& conn) {
                 if (now - next_send > interval) next_send = now + interval;
             }
         });
+}
+
+void VirtualDevice::stop_production_thread(uint32_t oto_t_id) {
+    std::thread t;
+    {
+        std::scoped_lock lock(production_mu_);
+        if (auto it = production_cancel_.find(oto_t_id); it != production_cancel_.end()) {
+            it->second->store(true, std::memory_order_relaxed);
+            production_cancel_.erase(it);
+        }
+        if (auto it = production_threads_.find(oto_t_id); it != production_threads_.end()) {
+            t = std::move(it->second);
+            production_threads_.erase(it);
+        }
+    }
+    // Guard against self-join if this is ever invoked from the production
+    // thread itself (never today, but cheap insurance).
+    if (t.joinable() && t.get_id() != std::this_thread::get_id()) {
+        t.join();
+    }
 }
 
 void VirtualDevice::stop_production_threads() {

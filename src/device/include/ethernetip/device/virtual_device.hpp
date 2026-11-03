@@ -96,6 +96,11 @@ private:
                                               const protocol::IpEndpoint& plc_udp);
 
     void start_production_thread(connections::IoConnection& conn);
+    /// Cancel + join the production thread for a single connection, if any.
+    /// Invoked from the on_connection_removed callback BEFORE the connection
+    /// manager drops its shared_ptr so the thread can observe the shutdown
+    /// through its weak_ptr before the IoConnection is destroyed.
+    void stop_production_thread(uint32_t oto_t_connection_id);
     void stop_production_threads();
     void watchdog_loop();
 
