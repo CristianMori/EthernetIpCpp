@@ -20,11 +20,17 @@ std::pair<CipPath, int> CipPath::parse(std::span<const uint8_t> data) {
             ++offset;
             if (offset >= data.size()) break;
             uint8_t char_count = data[offset++];
-            if (offset + char_count > data.size()) break;
+            // Odd char counts carry a trailing pad byte for word alignment;
+            // require it to be present before advancing past the name so
+            // raw_path.assign(..., begin + offset) cannot read 1 byte past
+            // the end of the input buffer.
+            const bool needs_pad = (char_count % 2) != 0;
+            const size_t name_end = static_cast<size_t>(offset) + char_count;
+            const size_t seg_end  = name_end + (needs_pad ? 1u : 0u);
+            if (seg_end > data.size()) break;
 
             std::string name(reinterpret_cast<const char*>(data.data() + offset), char_count);
-            offset += char_count;
-            if (char_count % 2 != 0) ++offset;  // pad to word boundary
+            offset = seg_end;
 
             if (!has_symbolic) {
                 symbolic = name;
