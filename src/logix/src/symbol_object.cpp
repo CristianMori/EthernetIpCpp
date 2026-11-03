@@ -147,6 +147,16 @@ CipServiceResponse SymbolObject::handle_get_instance_attribute_list(
     if (req.data.size() < static_cast<size_t>(2 + attr_count * 2)) {
         return CipServiceResponse::error(req.service_code, CipStatus::error(0x13));
     }
+    // Only a handful of attributes are defined (ids 1,2,3,5,6,8,10). A
+    // caller requesting hundreds — let alone 0xFFFF — of them is either
+    // broken or hostile. Cap generously; the per-attribute write-side
+    // bounds check below is the real safety net, but refusing an
+    // obviously pathological request keeps the response buffer modest.
+    constexpr uint16_t kMaxRequestedAttrs = 32;
+    if (attr_count > kMaxRequestedAttrs) {
+        return CipServiceResponse::error(
+            req.service_code, CipStatus::error(CipStatus::TooMuchData));
+    }
     std::vector<uint16_t> requested(attr_count);
     for (uint16_t i = 0; i < attr_count; ++i) {
         requested[i] = ser::read_uint(req.data.subspan(2u + i * 2u));
@@ -245,6 +255,13 @@ CipServiceResponse SymbolObject::handle_get_instance_attribute_list(
                 case 8: entry = 12; break;                            // Array Dimensions (3x UDINT)
                 case 10: entry = 1; break;                            // External Access (USINT)
                 default: entry = 0; break;
+            }
+            // Unconditional buffer-size guard: the max_response rollback
+            // below only kicks in once at least one tag has been packed,
+            // so without this a single tag with a crafted attribute list
+            // could walk past buf.size() on its very first row.
+            if (entry > 0 && static_cast<size_t>(offset) + static_cast<size_t>(entry) > buf.size()) {
+                offset = entry_start; truncated = true; rolled_back = true; break;
             }
             if (entry > 0 && offset + entry > max_response && tags_packed > 0) {
                 offset = entry_start; truncated = true; rolled_back = true; break;
