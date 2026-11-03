@@ -60,4 +60,21 @@ inline constexpr int MaxReplyData = 480;
     Tag& tag, uint8_t service_code, std::span<const uint8_t> data,
     const WalkResult& walked);
 
+/// Walker-aware Read_Tag_Fragmented. Reads from `walked.offset`
+/// + the request's own byte_offset, with the walker's element size.
+/// Unlike `handle_read_tag_fragmented`, this does NOT multiply any
+/// `element_offset` by `tag.element_size()`; that calculation is wrong
+/// when the walker drilled through a structure member, where
+/// `walked.element_size != tag.element_size()`.
+[[nodiscard]] cip::CipServiceResponse handle_read_tag_fragmented_at(
+    const Tag& tag, uint8_t service_code, std::span<const uint8_t> data,
+    const WalkResult& walked);
+
+/// Walker-aware Write_Tag_Fragmented. Writes at `walked.offset`
+/// + the request's own byte_offset, validating the tag type against the
+/// walker-resolved node (not the root tag).
+[[nodiscard]] cip::CipServiceResponse handle_write_tag_fragmented_at(
+    Tag& tag, uint8_t service_code, std::span<const uint8_t> data,
+    const WalkResult& walked);
+
 } // namespace ethernetip::logix::tag_services

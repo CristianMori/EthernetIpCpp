@@ -260,22 +260,26 @@ CipServiceResponse LogixDispatcher::dispatch_via_walker(Tag& tag, uint8_t servic
         return CipServiceResponse::error(service_code, CipStatus::error(0x05));
     }
     switch (service_code) {
-        case tag_services::ReadTag:  return tag_services::handle_read_tag_at(tag, service_code, data, *walked);
-        case tag_services::WriteTag: return tag_services::handle_write_tag_at(tag, service_code, data, *walked);
-        default: {
-            // Fragmented tag services (0x52/0x53) take an element_offset that
-            // handle_read_tag_fragmented / handle_write_tag_fragmented multiply
-            // by tag.element_size() to form their base byte offset. The walker
-            // produces a byte offset (walked->offset) and the element size at
-            // the resolved node, so convert back to an element index. Mirrors
-            // the symbolic-name fix in commit 5960596: without this the walker
-            // resolved offset is lost and a fragmented read of counts[5] via
-            // an ordered-segments path reads from element 0.
-            int el = (walked->element_size > 0)
-                         ? walked->offset / walked->element_size
-                         : 0;
-            return dispatch_tag_service(tag, service_code, data, el);
-        }
+        case tag_services::ReadTag:
+            return tag_services::handle_read_tag_at(tag, service_code, data, *walked);
+        case tag_services::WriteTag:
+            return tag_services::handle_write_tag_at(tag, service_code, data, *walked);
+        case tag_services::ReadTagFragmented:
+            // Dispatch straight to the walker-aware fragmented sibling: it
+            // uses walked->offset as a byte offset. The earlier divide-based
+            // conversion ( `walked->offset / walked->element_size` passed as
+            // element_offset to handle_read_tag_fragmented) was wrong whenever
+            // the walker drilled into a structure member — walked->element_size
+            // is the member's element size but handle_read_tag_fragmented
+            // multiplies by tag.element_size() (the whole UDT size), landing
+            // on the wrong byte.
+            return tag_services::handle_read_tag_fragmented_at(tag, service_code, data, *walked);
+        case tag_services::WriteTagFragmented:
+            return tag_services::handle_write_tag_fragmented_at(tag, service_code, data, *walked);
+        default:
+            // Only ReadModifyWrite (0x4E) and any future service land here.
+            // None of the remaining services use element_offset.
+            return dispatch_tag_service(tag, service_code, data, 0);
     }
 }
 

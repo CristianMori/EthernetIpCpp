@@ -393,4 +393,131 @@ CipServiceResponse handle_write_tag_at(Tag& tag, uint8_t service_code,
     return CipServiceResponse::success(service_code);
 }
 
+CipServiceResponse handle_read_tag_fragmented_at(const Tag& tag, uint8_t service_code,
+                                                   std::span<const uint8_t> data,
+                                                   const WalkResult& w) {
+    if (data.size() < 6) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+    }
+    uint16_t element_count = ser::read_uint(data);
+    uint32_t byte_offset_in_elements = ser::read_udint(data.subspan(2));
+
+    // Fragmented read of a single BOOL bit member. The service is coarse for
+    // this (fragmentation is pointless on one bit), but Studio 5000 is known
+    // to send 0x52 against any node including bits, so we mirror the atomic
+    // sibling handle_read_tag_at and reply with a single 0x00/0x01 byte.
+    if (w.bit_pos.has_value()) {
+        if (element_count != 1 || byte_offset_in_elements != 0) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+        }
+        uint8_t host = tag.get_data(w.offset, 1)[0];
+        uint8_t bit = static_cast<uint8_t>((host >> *w.bit_pos) & 0x01);
+        std::vector<uint8_t> reply(3);
+        ser::write_uint(reply, static_cast<uint16_t>(0x00C1));
+        reply[2] = bit;
+        return CipServiceResponse::success(service_code, std::move(reply));
+    }
+
+    int total_bytes = element_count * w.element_size;
+    if (total_bytes < 0 ||
+        byte_offset_in_elements >= static_cast<uint32_t>(total_bytes)) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+
+    // w.offset is already the walker-resolved byte offset into the tag buffer;
+    // the fragmented request's own byte_offset adds to it.
+    int64_t absolute_wide = static_cast<int64_t>(w.offset)
+                            + static_cast<int64_t>(byte_offset_in_elements);
+    if (absolute_wide < 0 ||
+        absolute_wide > std::numeric_limits<int>::max() ||
+        absolute_wide >= tag.data_size()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    int absolute_offset = static_cast<int>(absolute_wide);
+
+    // Nested struct: build_read_response_struct prepends [A0 02][handle].
+    bool as_struct = w.tpl != nullptr;
+    int prefix_len = as_struct ? 4 : 2;
+    int remaining  = std::min(total_bytes - static_cast<int>(byte_offset_in_elements),
+                              tag.data_size() - absolute_offset);
+    int chunk      = std::min(remaining, MaxReplyData - prefix_len);
+    bool more      = static_cast<int>(byte_offset_in_elements) + chunk < total_bytes;
+
+    if (as_struct) {
+        return build_read_response_struct(tag, service_code, absolute_offset,
+                                           chunk, more, w.tpl->structure_handle());
+    }
+    return build_read_response_atomic(tag, service_code, absolute_offset,
+                                       chunk, more, w.type_code);
+}
+
+CipServiceResponse handle_write_tag_fragmented_at(Tag& tag, uint8_t service_code,
+                                                    std::span<const uint8_t> data,
+                                                    const WalkResult& w) {
+    if (data.size() < 8) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+    }
+    uint16_t tag_type = ser::read_uint(data);
+
+    bool as_struct = w.tpl != nullptr;
+    uint16_t element_count         = 0;
+    uint32_t byte_offset_in_elements = 0;
+    int      header_len            = 0;
+
+    if (as_struct) {
+        if (data.size() < 10) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+        }
+        uint16_t struct_handle  = ser::read_uint(data.subspan(2));
+        element_count           = ser::read_uint(data.subspan(4));
+        byte_offset_in_elements = ser::read_udint(data.subspan(6));
+        header_len              = 10;
+        if (tag_type != kStructTypeIndicator ||
+            struct_handle != w.tpl->structure_handle()) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2107}));
+        }
+    } else {
+        element_count           = ser::read_uint(data.subspan(2));
+        byte_offset_in_elements = ser::read_udint(data.subspan(4));
+        header_len              = 8;
+        if (tag_type != w.type_code) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2107}));
+        }
+    }
+
+    if (w.bit_pos.has_value()) {
+        // Degenerate fragmented write to one bit; mirror handle_write_tag_at.
+        if (element_count != 1 || byte_offset_in_elements != 0 ||
+            static_cast<int>(data.size()) < header_len + 1) {
+            return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+        }
+        bool new_value = (data[header_len] & 0x01) != 0;
+        tag.atomic_set_bit(w.offset, *w.bit_pos, new_value);
+        return CipServiceResponse::success(service_code);
+    }
+
+    int total_bytes = element_count * w.element_size;
+    int write_len   = static_cast<int>(data.size()) - header_len;
+    if (write_len < 0 || total_bytes < 0) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0x13));
+    }
+    // Guard the uint32 wrap on byte_offset_in_elements + write_len, same as
+    // the plain handle_write_tag_fragmented (commit 2377f71).
+    uint64_t end_in_bytes = static_cast<uint64_t>(byte_offset_in_elements)
+                            + static_cast<uint64_t>(static_cast<uint32_t>(write_len));
+    if (end_in_bytes > static_cast<uint64_t>(total_bytes)) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2104}));
+    }
+    int64_t absolute_wide = static_cast<int64_t>(w.offset)
+                            + static_cast<int64_t>(byte_offset_in_elements);
+    int64_t end_absolute_wide = absolute_wide + static_cast<int64_t>(write_len);
+    if (absolute_wide < 0 ||
+        end_absolute_wide > tag.data_size()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    tag.set_data(data.subspan(header_len, write_len),
+                 static_cast<int>(absolute_wide));
+    return CipServiceResponse::success(service_code);
+}
+
 } // namespace ethernetip::logix::tag_services
