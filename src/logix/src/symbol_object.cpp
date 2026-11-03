@@ -182,11 +182,13 @@ CipServiceResponse SymbolObject::handle_get_instance_attribute_list(
     if (req.path.symbolic_name.has_value() &&
         req.path.symbolic_name->rfind(kProgramPrefix, 0) == 0) {
         std::string prog_name = req.path.symbolic_name->substr(kProgramPrefix.size());
-        ProgramScope* prog = tags_.find_program(prog_name);
-        if (prog == nullptr) {
+        if (tags_.find_program(prog_name) == nullptr) {
             return CipServiceResponse::error(req.service_code, CipStatus::error(0x05));
         }
-        for (auto& kv : prog->tags_by_name_lower) tags.push_back(kv.second.get());
+        // Take a locked snapshot rather than iterating tags_by_name_lower
+        // directly: a concurrent add_program_tag may rehash that unordered_map
+        // while holding TagDatabase::mu_, which would race a raw iteration here.
+        tags = tags_.snapshot_program_tags(prog_name);
         scoped_to_program = true;
     } else {
         tags = tags_.all_tags();

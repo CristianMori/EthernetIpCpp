@@ -255,6 +255,17 @@ Tag* TagDatabase::find_program_tag(std::string_view program, std::string_view na
     return nit == pit->second->tags_by_name_lower.end() ? nullptr : nit->second.get();
 }
 
+std::vector<Tag*> TagDatabase::snapshot_program_tags(std::string_view program) {
+    std::string pkey = lower(program);
+    std::scoped_lock lock(mu_);
+    std::vector<Tag*> out;
+    auto pit = programs_lower_.find(pkey);
+    if (pit == programs_lower_.end()) return out;
+    out.reserve(pit->second->tags_by_name_lower.size());
+    for (auto& [_, t] : pit->second->tags_by_name_lower) out.push_back(t.get());
+    return out;
+}
+
 TemplateDefinition& TagDatabase::add_template_prebuilt(std::unique_ptr<TemplateDefinition> tmpl) {
     if (tmpl->instance_id() == 0) {
         throw std::invalid_argument("template instance_id must be non-zero");

@@ -117,6 +117,13 @@ public:
 
     [[nodiscard]] Tag* find_program_tag(std::string_view program, std::string_view name);
 
+    /// Locked snapshot of a program's tag pointers. Mirrors ``all_tags`` but
+    /// scoped to one ``ProgramScope``: callers iterate the returned vector
+    /// instead of ``ProgramScope::tags_by_name_lower`` directly, which keeps
+    /// them off a container that ``add_program_tag`` may rehash under ``mu_``.
+    /// Returns an empty vector when the program is unknown.
+    [[nodiscard]] std::vector<Tag*> snapshot_program_tags(std::string_view program);
+
     /// Define a structure template (UDT) with Logix alignment + BOOL packing.
     ///
     /// Alignment rules (1756-PM020):
