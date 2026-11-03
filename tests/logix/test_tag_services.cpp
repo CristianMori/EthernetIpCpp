@@ -72,3 +72,60 @@ TEST(TagServicesTest, ReadModifyWriteAppliesOrAndMask) {
     EXPECT_TRUE(resp.status.is_success());
     EXPECT_EQ(0xFFFFFFFFu, t.read<uint32_t>(0));
 }
+
+// Guard against signed-int overflow in element_offset * element_size().
+// Upstream caps element_id at INT32_MAX; a value like 2^30 passes that check
+// but multiplied by an 8-byte element produces 2^33, which overflows a signed
+// int and is undefined behavior. All four services must reject it cleanly.
+TEST(TagServicesTest, ReadTagRejectsElementOffsetOverflow) {
+    Tag t(1, "big", ldt::make_atomic_symbol_type(ldt::Lint, 0), ldt::Lint, 8, 1);
+    std::array<uint8_t, 2> req{};
+    ser::write_uint(req, 1);  // element_count = 1
+    auto resp = tag_services::handle_read_tag(t, tag_services::ReadTag, req,
+                                               /*element_offset=*/0x40000000);
+    EXPECT_FALSE(resp.status.is_success());
+    EXPECT_EQ(0xFF, resp.status.general_status);
+    ASSERT_EQ(1u, resp.status.additional_status.size());
+    EXPECT_EQ(0x2105u, resp.status.additional_status[0]);
+}
+
+TEST(TagServicesTest, WriteTagRejectsElementOffsetOverflow) {
+    Tag t(1, "big", ldt::make_atomic_symbol_type(ldt::Lint, 0), ldt::Lint, 8, 1);
+    std::array<uint8_t, 12> req{};
+    ser::write_uint(req, ldt::Lint);
+    ser::write_uint(std::span<uint8_t>(req).subspan(2), 1);
+    // 8 bytes of payload are present at [4..12); offset makes it unreachable.
+    auto resp = tag_services::handle_write_tag(t, tag_services::WriteTag, req,
+                                                /*element_offset=*/0x40000000);
+    EXPECT_FALSE(resp.status.is_success());
+    EXPECT_EQ(0xFF, resp.status.general_status);
+    ASSERT_EQ(1u, resp.status.additional_status.size());
+    EXPECT_EQ(0x2105u, resp.status.additional_status[0]);
+}
+
+TEST(TagServicesTest, ReadFragmentedRejectsElementOffsetOverflow) {
+    Tag t(1, "big", ldt::make_atomic_symbol_type(ldt::Lint, 1), ldt::Lint, 8, 2);
+    std::array<uint8_t, 6> req{};
+    ser::write_uint(req, 1);
+    ser::write_udint(std::span<uint8_t>(req).subspan(2), 0u);
+    auto resp = tag_services::handle_read_tag_fragmented(
+        t, tag_services::ReadTagFragmented, req, /*element_offset=*/0x40000000);
+    EXPECT_FALSE(resp.status.is_success());
+    EXPECT_EQ(0xFF, resp.status.general_status);
+    ASSERT_EQ(1u, resp.status.additional_status.size());
+    EXPECT_EQ(0x2105u, resp.status.additional_status[0]);
+}
+
+TEST(TagServicesTest, WriteFragmentedRejectsElementOffsetOverflow) {
+    Tag t(1, "big", ldt::make_atomic_symbol_type(ldt::Lint, 1), ldt::Lint, 8, 2);
+    std::array<uint8_t, 16> req{};
+    ser::write_uint(req, ldt::Lint);
+    ser::write_uint(std::span<uint8_t>(req).subspan(2), 1);
+    ser::write_udint(std::span<uint8_t>(req).subspan(4), 0u);
+    auto resp = tag_services::handle_write_tag_fragmented(
+        t, tag_services::WriteTagFragmented, req, /*element_offset=*/0x40000000);
+    EXPECT_FALSE(resp.status.is_success());
+    EXPECT_EQ(0xFF, resp.status.general_status);
+    ASSERT_EQ(1u, resp.status.additional_status.size());
+    EXPECT_EQ(0x2105u, resp.status.additional_status[0]);
+}

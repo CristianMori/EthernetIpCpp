@@ -4,6 +4,8 @@
 #include "ethernetip/logix/logix_data_types.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 
 namespace ethernetip::logix::tag_services {
 
@@ -75,15 +77,20 @@ CipServiceResponse handle_read_tag(const Tag& tag, uint8_t service_code,
         return CipServiceResponse::error(service_code, CipStatus::error(0x13));
     }
     uint16_t element_count = ser::read_uint(data);
-    int byte_offset   = element_offset * tag.element_size();
-    int bytes_to_read = element_count * tag.element_size();
-    // Defense in depth: upstream rejects element_id > INT32_MAX, but a negative
-    // byte_offset here would slip past the upper-bound check below (negative +
-    // small > data_size is false) and then subspan into the tag buffer with a
-    // huge size_t.
-    if (byte_offset < 0 || bytes_to_read < 0) {
+    // element_offset is bounded by INT32_MAX upstream, but
+    // element_offset * element_size() can still overflow a signed int
+    // (e.g. 2^30 * 8). Widen to int64_t, verify the result fits in int
+    // AND inside the tag buffer, then narrow.
+    int64_t byte_offset_wide = static_cast<int64_t>(element_offset) * tag.element_size();
+    int64_t bytes_to_read_wide =
+        static_cast<int64_t>(element_count) * tag.element_size();
+    if (byte_offset_wide < 0 || bytes_to_read_wide < 0 ||
+        byte_offset_wide > std::numeric_limits<int>::max() ||
+        bytes_to_read_wide > std::numeric_limits<int>::max()) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
     }
+    int byte_offset   = static_cast<int>(byte_offset_wide);
+    int bytes_to_read = static_cast<int>(bytes_to_read_wide);
     if (byte_offset + bytes_to_read > tag.data_size()) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
     }
@@ -125,15 +132,19 @@ CipServiceResponse handle_write_tag(Tag& tag, uint8_t service_code,
         }
     }
 
-    int byte_offset    = element_offset * tag.element_size();
-    int bytes_to_write = element_count * tag.element_size();
-
-    // Defense in depth: upstream rejects element_id > INT32_MAX, but a negative
-    // byte_offset would turn Tag::set_data into a backwards memcpy if the
-    // dispatcher's cast ever truncated.
-    if (byte_offset < 0 || bytes_to_write < 0) {
+    // element_offset is bounded by INT32_MAX upstream, but
+    // element_offset * element_size() can still overflow a signed int.
+    // Compute wide, bounds-check, then narrow.
+    int64_t byte_offset_wide = static_cast<int64_t>(element_offset) * tag.element_size();
+    int64_t bytes_to_write_wide =
+        static_cast<int64_t>(element_count) * tag.element_size();
+    if (byte_offset_wide < 0 || bytes_to_write_wide < 0 ||
+        byte_offset_wide > std::numeric_limits<int>::max() ||
+        bytes_to_write_wide > std::numeric_limits<int>::max()) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
     }
+    int byte_offset    = static_cast<int>(byte_offset_wide);
+    int bytes_to_write = static_cast<int>(bytes_to_write_wide);
 
     // pycomm3 writes SHORT_STRING as [length_byte][chars] with no fixed-slot
     // padding, so the payload is 1 + N bytes rather than the full 81-byte
@@ -181,7 +192,14 @@ CipServiceResponse handle_read_tag_fragmented(const Tag& tag, uint8_t service_co
     if (byte_offset_in_elements >= static_cast<uint32_t>(total_bytes)) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
     }
-    int base_offset     = element_offset * tag.element_size();
+    // element_offset is bounded by INT32_MAX upstream, but
+    // element_offset * element_size() can still overflow a signed int.
+    int64_t base_offset_wide = static_cast<int64_t>(element_offset) * tag.element_size();
+    if (base_offset_wide < 0 ||
+        base_offset_wide > std::numeric_limits<int>::max()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    int base_offset     = static_cast<int>(base_offset_wide);
     int absolute_offset = base_offset + static_cast<int>(byte_offset_in_elements);
     if (absolute_offset >= tag.data_size()) {
         return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
@@ -227,7 +245,14 @@ CipServiceResponse handle_write_tag_fragmented(Tag& tag, uint8_t service_code,
         }
     }
 
-    int base_offset = element_offset * tag.element_size();
+    // element_offset is bounded by INT32_MAX upstream, but
+    // element_offset * element_size() can still overflow a signed int.
+    int64_t base_offset_wide = static_cast<int64_t>(element_offset) * tag.element_size();
+    if (base_offset_wide < 0 ||
+        base_offset_wide > std::numeric_limits<int>::max()) {
+        return CipServiceResponse::error(service_code, CipStatus::error(0xFF, {0x2105}));
+    }
+    int base_offset = static_cast<int>(base_offset_wide);
     int total_bytes = element_count * tag.element_size();
     int write_len   = static_cast<int>(data.size()) - header_len;
     if (write_len < 0 || total_bytes < 0) {
