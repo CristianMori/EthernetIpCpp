@@ -137,8 +137,8 @@ int main(int argc, char** argv) {
     // reply's ConnectedAddress item). Without this, Logix MSG ignores our
     // Class 3 explicit replies as "not for me" and times out with EXTERR 0x23.
     adapter.set_connection_id_lookup([conn_mgr_raw](uint32_t oto_t_id) -> uint32_t {
-        auto* conn = conn_mgr_raw->find_by_oto_t_id(oto_t_id);
-        return conn != nullptr ? conn->tto_o_connection_id : 0u;
+        auto conn = conn_mgr_raw->find_by_oto_t_id(oto_t_id);
+        return conn ? conn->tto_o_connection_id : 0u;
     });
 
     adapter.listen(ethernetip::protocol::IpEndpoint{bind, static_cast<uint16_t>(port)});

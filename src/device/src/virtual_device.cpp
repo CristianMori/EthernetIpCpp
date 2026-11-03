@@ -86,8 +86,9 @@ void VirtualDevice::close() {
 
     stop_production_threads();
 
-    // Drop all active connections (fires removal callbacks).
-    for (auto* conn : connection_manager_.active_connections()) {
+    // Drop all active connections (fires removal callbacks). The snapshot
+    // is a vector<shared_ptr>; each pin stays valid for the iteration.
+    for (auto& conn : connection_manager_.active_connections()) {
         connection_manager_.remove_connection(*conn);
     }
 
@@ -165,7 +166,7 @@ void VirtualDevice::on_connection_opened_from_adapter(
         const CipServiceResponse& /*response*/, const IpEndpoint& plc_udp) {
     // The adapter just sent a successful Forward Open response. Match the
     // newest connection (no remote endpoint yet) to this PLC and stash it.
-    for (auto* conn : connection_manager_.active_connections()) {
+    for (auto& conn : connection_manager_.active_connections()) {
         if (!conn->remote_endpoint_set) {
             conn->remote_host = plc_udp.host;
             conn->remote_port = plc_udp.port;
@@ -178,7 +179,10 @@ void VirtualDevice::on_connection_opened_from_adapter(
 void VirtualDevice::on_udp_message(std::unique_ptr<messages::Message> msg) {
     if (msg->kind != messages::MessageKind::CpfConnectedData) return;
     auto& cpf = static_cast<messages::CpfConnectedDataMessage&>(*msg);
-    auto* conn = connection_manager_.find_by_oto_t_id(cpf.connection_id);
+    // F3 will convert this to hold the shared_ptr directly; for the API
+    // transition we keep the raw pointer semantics.
+    auto conn_sp = connection_manager_.find_by_oto_t_id(cpf.connection_id);
+    auto* conn = conn_sp.get();
     if (conn == nullptr || conn->state != ConnectionState::Established) return;
 
     // Learn / update the scanner's UDP sender endpoint — the originator
@@ -245,7 +249,7 @@ void VirtualDevice::watchdog_loop() {
         std::this_thread::sleep_for(50ms);
         if (!watchdog_running_.load(std::memory_order_relaxed)) break;
         auto now = std::chrono::steady_clock::now();
-        for (auto* conn : connection_manager_.active_connections()) {
+        for (auto& conn : connection_manager_.active_connections()) {
             if (conn->state != ConnectionState::Established) continue;
             if (conn->oto_t_rpi == 0) continue;   // T->O-only connection has no inbound watchdog
             if (!conn->first_received) continue;  // CIP Vol 1 §3-4.5.2: don't count until first frame

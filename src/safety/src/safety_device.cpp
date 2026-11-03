@@ -465,7 +465,10 @@ void SafetyDevice::handle_received_io_data(IoConnection& conn,
     // a cold-start frame on the partner client connection (only fires once).
     if (plc_running && !conn.safety_plc_running) {
         conn.safety_plc_running = true;
-        for (auto* other : connection_manager().active_connections()) {
+        // F3 will keep each entry as a shared_ptr pin for the duration of
+        // the produce_io_data call; for the API transition, keep raw ptrs.
+        for (auto& other_sp : connection_manager().active_connections()) {
+            auto* other = other_sp.get();
             if (other != &conn
                 && other->is_safety
                 && other->originator_vendor_id == conn.originator_vendor_id
@@ -482,7 +485,8 @@ void SafetyDevice::on_remote_endpoint_updated(IoConnection& conn,
     if (!conn.is_safety) return;
     // Propagate the endpoint to every safety connection from the same
     // originator (partner connections may not have seen incoming data yet).
-    for (auto* other : connection_manager().active_connections()) {
+    for (auto& other_sp : connection_manager().active_connections()) {
+        auto* other = other_sp.get();
         if (other != &conn
             && other->is_safety
             && other->originator_vendor_id == conn.originator_vendor_id
@@ -524,9 +528,12 @@ void SafetyDevice::on_connection_removed(IoConnection& conn) {
     validator_->remove_instance_by_connection(&conn);
 
     // If the last safety connection just closed, clear the SCID + CFUNID on
-    // the supervisor so the next FwdOpen is treated as fresh.
+    // the supervisor so the next FwdOpen is treated as fresh. The snapshot
+    // is a vector<shared_ptr<IoConnection>>, so each entry remains valid for
+    // the full iteration even if the manager drops its own reference —
+    // F6 (snapshot race) is addressed by this shared_ptr return.
     bool any_safety_left = false;
-    for (auto* other : connection_manager().active_connections()) {
+    for (auto& other : connection_manager().active_connections()) {
         if (other->is_safety) { any_safety_left = true; break; }
     }
     if (!any_safety_left) {

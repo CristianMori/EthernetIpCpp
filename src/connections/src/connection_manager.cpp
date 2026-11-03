@@ -50,24 +50,24 @@ std::unique_ptr<CipClass> ConnectionManagerObject::release_cip_class() {
     return std::move(cip_class_);
 }
 
-std::vector<IoConnection*> ConnectionManagerObject::active_connections() {
+std::vector<std::shared_ptr<IoConnection>> ConnectionManagerObject::active_connections() {
     std::scoped_lock lock(mu_);
-    std::vector<IoConnection*> out;
+    std::vector<std::shared_ptr<IoConnection>> out;
     out.reserve(connections_.size());
     for (auto& [_, conn] : connections_) {
-        out.push_back(conn.get());
+        out.push_back(conn);
     }
     return out;
 }
 
-IoConnection* ConnectionManagerObject::find_by_oto_t_id(uint32_t connection_id) {
+std::shared_ptr<IoConnection> ConnectionManagerObject::find_by_oto_t_id(uint32_t connection_id) {
     std::scoped_lock lock(mu_);
     auto it = connections_.find(connection_id);
-    return it == connections_.end() ? nullptr : it->second.get();
+    return it == connections_.end() ? nullptr : it->second;
 }
 
 void ConnectionManagerObject::remove_connection(IoConnection& conn) {
-    std::unique_ptr<IoConnection> popped;
+    std::shared_ptr<IoConnection> popped;
     {
         std::scoped_lock lock(mu_);
         auto it = connections_.find(conn.oto_t_connection_id);
@@ -80,7 +80,10 @@ void ConnectionManagerObject::remove_connection(IoConnection& conn) {
     for (auto& cb : on_connection_removed) {
         cb(conn);
     }
-    // popped is destroyed here, after callbacks have observed the connection.
+    // popped (the manager's reference) drops here. Any outstanding
+    // shared_ptr held by a worker keeps the IoConnection alive until that
+    // caller is done; a weak_ptr::lock() from a producer thread then fails
+    // and the thread exits cleanly.
 }
 
 void ConnectionManagerObject::timeout_connection(IoConnection& conn) {
@@ -159,7 +162,7 @@ CipServiceResponse ConnectionManagerObject::process_forward_open(
     uint32_t oto_t_id = next_connection_id_.fetch_add(1) + 1;
     uint32_t tto_o_id = fwd_open.tto_o_connection_id;
 
-    auto conn = std::make_unique<IoConnection>();
+    auto conn = std::make_shared<IoConnection>();
     conn->connection_serial_number   = fwd_open.connection_serial_number;
     conn->originator_vendor_id       = fwd_open.originator_vendor_id;
     conn->originator_serial_number   = fwd_open.originator_serial_number;
@@ -188,7 +191,9 @@ CipServiceResponse ConnectionManagerObject::process_forward_open(
         }
     }
 
-    IoConnection* conn_view = conn.get();
+    auto conn_view = conn;   // local shared_ptr keeps the connection alive
+                              // past the move into the map, before the
+                              // established callbacks observe it.
     {
         std::scoped_lock lock(mu_);
         connections_[oto_t_id] = std::move(conn);
@@ -248,19 +253,19 @@ CipServiceResponse ConnectionManagerObject::handle_forward_close(
     uint16_t orig_vendor = ser::read_uint(request.data.subspan(4));
     uint32_t orig_serial = ser::read_udint(request.data.subspan(6));
 
-    IoConnection* found = nullptr;
+    std::shared_ptr<IoConnection> found;
     {
         std::scoped_lock lock(mu_);
         for (auto& [_, conn] : connections_) {
             if (conn->connection_serial_number == conn_serial
                 && conn->originator_vendor_id  == orig_vendor
                 && conn->originator_serial_number == orig_serial) {
-                found = conn.get();
+                found = conn;
                 break;
             }
         }
     }
-    if (found == nullptr) {
+    if (!found) {
         return CipServiceResponse::error(request.service_code,
             CipStatus::error(0x01, std::vector<uint16_t>{0x0107}));
     }

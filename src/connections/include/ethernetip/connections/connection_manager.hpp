@@ -38,11 +38,16 @@ public:
     [[nodiscard]] std::unique_ptr<cip::CipClass> release_cip_class();
 
     /// Snapshot of currently active connections (lock-protected copy).
-    [[nodiscard]] std::vector<IoConnection*> active_connections();
+    /// Returned shared_ptrs keep each IoConnection alive for the duration of
+    /// the caller's use even if the manager drops its own ownership between
+    /// the snapshot and the dereference.
+    [[nodiscard]] std::vector<std::shared_ptr<IoConnection>> active_connections();
 
     /// Look up a connection by its O->T connection ID. Used by the UDP transport
-    /// to route incoming I/O packets to the right connection.
-    [[nodiscard]] IoConnection* find_by_oto_t_id(uint32_t connection_id);
+    /// to route incoming I/O packets to the right connection. Returns null if
+    /// no connection matches. Callers hold the shared_ptr for the duration of
+    /// use so the IoConnection cannot destruct underneath them.
+    [[nodiscard]] std::shared_ptr<IoConnection> find_by_oto_t_id(uint32_t connection_id);
 
     /// Remove a connection, mark it NonExistent, and fire on_connection_removed.
     void remove_connection(IoConnection& conn);
@@ -93,7 +98,11 @@ private:
     cip::CipClass* cip_class_view_ = nullptr;   ///< raw view for handler closure
 
     std::mutex mu_;
-    std::unordered_map<uint32_t, std::unique_ptr<IoConnection>> connections_;
+    /// Shared ownership: lookups return shared_ptr so callers can safely hold
+    /// a reference past the lock-released boundary. remove_connection drops
+    /// the manager's shared_ptr; the IoConnection destructs when the last
+    /// outstanding reference drops.
+    std::unordered_map<uint32_t, std::shared_ptr<IoConnection>> connections_;
     std::atomic<uint32_t> next_connection_id_{0};
 
     ISafetyConnectionHandler* safety_handler_ = nullptr;
