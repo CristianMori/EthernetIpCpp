@@ -38,6 +38,35 @@ TEST(ConnectionPathParserTest, ElectronicKeyDetected) {
     EXPECT_EQ(102u, r.produced_assembly_instance.value_or(0));
 }
 
+// Mirror of the C# regression ElectronicKeyDetected_And_RestOfPathParsedCorrectly:
+// a full Generic Ethernet Module Forward Open path — Electronic Key, assembly
+// shortcut, and a Simple Data Segment carrying the config-assembly payload.
+// The key bytes are deliberately non-zero: a parser that dispatched 0x34 through
+// the generic logical-segment branch (0x34 & 0xE0 == 0x20) would mis-decode them
+// as further segments and lose everything that follows.
+TEST(ConnectionPathParserTest, ElectronicKeyWithConfigDataAndAssemblies) {
+    std::array<uint8_t, 30> path{
+        // Electronic Key, format 4: vendor 0x0001, device type 0x0023,
+        // product code 0x0010, major rev 0x82 (compat bit + rev 2), minor rev 2
+        0x34, 0x04, 0x01, 0x00, 0x23, 0x00, 0x10, 0x00, 0x82, 0x02,
+        // Class = Assembly (0x04), config instance 105
+        0x20, 0x04, 0x24, 0x69,
+        // Connection points: O->T 102, T->O 100
+        0x2C, 0x66, 0x2C, 0x64,
+        // Simple Data Segment: 5 words of config data
+        0x80, 0x05, 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    auto req = with_params(4, 4);
+    auto r = parse_connection_path(path, req);
+    EXPECT_TRUE(r.has_electronic_key);
+    EXPECT_EQ(105u, r.config_assembly_instance.value_or(0));
+    EXPECT_EQ(102u, r.consumed_assembly_instance.value_or(0));
+    EXPECT_EQ(100u, r.produced_assembly_instance.value_or(0));
+    const std::vector<uint8_t> expected_config{
+        0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    EXPECT_EQ(expected_config, r.config_data);
+    EXPECT_TRUE(r.safety_segment.empty());
+}
+
 TEST(ConnectionPathParserTest, SafetyThreeInstanceForm) {
     // class 4 + 3 instance segments + safety segment header (just type + 0 words)
     std::array<uint8_t, 12> path{
