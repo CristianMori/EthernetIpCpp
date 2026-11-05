@@ -15,7 +15,7 @@ This is a C++20 port of [EthernetIpSharp](https://github.com/CristianMori/Ethern
 
 - **Fragmented tag I/O** — Logix fragmented read/write (CIP services `0x52` / `0x53`) is walker-aware: nested UDT member paths such as `Program:MainProgram.motor.counts[5]` dispatch through the `handle_*_tag_fragmented_at` siblings instead of only resolving at the tag root.
 - **Full atomic type coverage** — `BOOL`, `SINT`, `INT`, `DINT`, `LINT`, `USINT`, `UINT`, `UDINT`, `ULINT`, `REAL`, `LREAL`, `BYTE`, `WORD`, `DWORD`, `LWORD` on both client and server (see `logix_data_types.hpp`).
-- **Tests** — 219 tests passing under `ctest`.
+- **Tests** — 226 tests passing under `ctest`.
 
 ---
 
@@ -644,7 +644,7 @@ The full safety ownership state machine (Propose_TUNID / Apply_TUNID / Configure
 
 ## Security hardening
 
-Six rounds of static security review have been applied across the stack, landing 35 commits. The test suite currently stands at **225 tests passing** under `ctest`.
+Six rounds of static security review have been applied across the stack, landing 35 commits. The test suite currently stands at **226 tests passing** under `ctest`.
 
 Coverage spans both server-side (adapter / target) and client-side (scanner) paths:
 
