@@ -47,15 +47,21 @@ void TcpSocketConnection::send(std::span<const uint8_t> data) {
 
 void TcpSocketConnection::close() {
     if (closed_.exchange(true)) return;
+    // shutdown_read() wakes read_loop's blocking recv(); close() alone does
+    // not on POSIX. Close only after the read thread has exited (or when
+    // called from the read thread itself, which is about to return).
     if (socket_ != sock::invalid) {
-        sock::close(socket_);
-        socket_ = sock::invalid;
+        sock::shutdown_read(socket_);
     }
     if (read_thread_.joinable()
         && std::this_thread::get_id() != read_thread_.get_id()) {
         read_thread_.join();
     } else if (read_thread_.joinable()) {
         read_thread_.detach();
+    }
+    if (socket_ != sock::invalid) {
+        sock::close(socket_);
+        socket_ = sock::invalid;
     }
 }
 
@@ -137,11 +143,16 @@ void TcpSocket::start(const IpEndpoint& bind) {
 void TcpSocket::stop() {
     if (!running_.exchange(false)) return;
 
+    // shutdown_read() wakes accept_loop's blocking accept(); close() alone
+    // does not on POSIX. Close only after the accept thread has exited.
+    if (listener_ != sock::invalid) {
+        sock::shutdown_read(listener_);
+    }
+    if (accept_thread_.joinable()) accept_thread_.join();
     if (listener_ != sock::invalid) {
         sock::close(listener_);
         listener_ = sock::invalid;
     }
-    if (accept_thread_.joinable()) accept_thread_.join();
 
     std::vector<std::shared_ptr<TcpSocketConnection>> live;
     {

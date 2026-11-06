@@ -20,6 +20,7 @@ constexpr socket_t invalid = INVALID_SOCKET;
 constexpr int      sockerr = SOCKET_ERROR;
 inline int  last_error() noexcept { return WSAGetLastError(); }
 inline int  close(socket_t s) noexcept { return ::closesocket(s); }
+inline int  shutdown_read(socket_t s) noexcept { return ::shutdown(s, SD_RECEIVE); }
 } // namespace ethernetip::protocol::sock
 #else
 #  include <arpa/inet.h>
@@ -33,6 +34,14 @@ constexpr socket_t invalid = -1;
 constexpr int      sockerr = -1;
 inline int  last_error() noexcept { return errno; }
 inline int  close(socket_t s) noexcept { return ::close(s); }
+/// Wake any thread blocked in recv/recvfrom/accept on this socket.
+/// POSIX close() does not do this (Winsock closesocket() does), so
+/// teardown must shutdown_read() first, join the I/O thread, then close().
+/// Only the read side is shut down: shutting down the write side would
+/// make a concurrent send()/sendto() raise SIGPIPE.
+/// The return value is ignored by callers: unconnected UDP sockets
+/// report ENOTCONN on Linux but still wake blocked readers.
+inline int  shutdown_read(socket_t s) noexcept { return ::shutdown(s, SHUT_RD); }
 } // namespace ethernetip::protocol::sock
 #endif
 

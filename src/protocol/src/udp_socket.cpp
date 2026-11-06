@@ -87,9 +87,11 @@ void UdpSocket::send(const IpEndpoint& destination, std::span<const uint8_t> dat
 void UdpSocket::stop() {
     if (!running_.exchange(false)) return;
 
+    // shutdown_read() wakes rx_loop's blocking recvfrom(); close() alone
+    // does not on POSIX. The fd is closed only after rx_thread_ has exited
+    // so it cannot be reused while recvfrom() still references it.
     if (socket_ != sock::invalid) {
-        sock::close(socket_);
-        socket_ = sock::invalid;
+        sock::shutdown_read(socket_);
     }
 
     {
@@ -100,6 +102,11 @@ void UdpSocket::stop() {
 
     if (rx_thread_.joinable())       rx_thread_.join();
     if (dispatch_thread_.joinable()) dispatch_thread_.join();
+
+    if (socket_ != sock::invalid) {
+        sock::close(socket_);
+        socket_ = sock::invalid;
+    }
 }
 
 void UdpSocket::rx_loop() {
