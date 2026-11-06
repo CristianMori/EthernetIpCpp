@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <gtest/gtest.h>
 #include <mutex>
 #include <string>
