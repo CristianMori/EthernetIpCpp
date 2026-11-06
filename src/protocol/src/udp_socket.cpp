@@ -87,10 +87,10 @@ void UdpSocket::send(const IpEndpoint& destination, std::span<const uint8_t> dat
 void UdpSocket::stop() {
     if (!running_.exchange(false)) return;
 
-    if (socket_ != sock::invalid) {
-        sock::close(socket_);
-        socket_ = sock::invalid;
-    }
+    // Wake rx_loop's blocking recvfrom(). On POSIX the fd stays open and is
+    // closed only after rx_thread_ has exited, so it cannot be reused while
+    // recvfrom() still references it. On Windows this closes the socket.
+    sock::wake_blocked(socket_);
 
     {
         std::scoped_lock lock(queue_mu_);
@@ -100,6 +100,11 @@ void UdpSocket::stop() {
 
     if (rx_thread_.joinable())       rx_thread_.join();
     if (dispatch_thread_.joinable()) dispatch_thread_.join();
+
+    if (socket_ != sock::invalid) {
+        sock::close(socket_);
+        socket_ = sock::invalid;
+    }
 }
 
 void UdpSocket::rx_loop() {
