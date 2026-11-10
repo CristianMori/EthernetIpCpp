@@ -16,6 +16,11 @@ endif()
 option(ETHERNETIP_BUILD_TESTS    "Build unit and integration tests" ON)
 option(ETHERNETIP_BUILD_SAMPLES  "Build runnable example programs"   ON)
 
+# std::thread / std::shared_mutex need the platform thread library on
+# glibc < 2.34 (pthread is not yet merged into libc there).
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 # ---- Components (each is its own static library) ----
 add_subdirectory(src/cip)
 add_subdirectory(src/connections)

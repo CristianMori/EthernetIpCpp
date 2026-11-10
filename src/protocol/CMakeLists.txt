@@ -15,7 +15,7 @@ add_library(ethernetip::protocol ALIAS ethernetip_protocol)
 target_include_directories(ethernetip_protocol PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_link_libraries(ethernetip_protocol PUBLIC ethernetip::cip ethernetip::connections)
+target_link_libraries(ethernetip_protocol PUBLIC ethernetip::cip ethernetip::connections Threads::Threads)
 if(WIN32)
     target_link_libraries(ethernetip_protocol PUBLIC ws2_32)
 endif()
