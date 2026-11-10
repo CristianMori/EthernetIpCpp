@@ -41,7 +41,15 @@ constexpr int      sockerr = -1;
 inline int  last_error() noexcept { return errno; }
 inline int  close(socket_t s) noexcept { return ::close(s); }
 /// Wake any thread blocked in recv/recvfrom/accept on s.
-/// POSIX close() does not do this, so shut down the read side only and
+#  ifdef __APPLE__
+/// Darwin: shutdown(SHUT_RD) on an unconnected UDP socket or a listener
+/// fails with ENOTCONN and does not unblock recvfrom()/accept(); close()
+/// does, so close here and invalidate the handle (same as Winsock).
+inline void wake_blocked(socket_t& s) noexcept {
+    if (s != invalid) { ::close(s); s = invalid; }
+}
+#  else
+/// Linux close() does not do this, so shut down the read side only and
 /// leave the fd open: callers join the I/O thread first, then close().
 /// Only SHUT_RD, so a concurrent send()/sendto() cannot raise SIGPIPE.
 /// The return value is ignored: unconnected UDP sockets report ENOTCONN
@@ -49,6 +57,7 @@ inline int  close(socket_t s) noexcept { return ::close(s); }
 inline void wake_blocked(socket_t& s) noexcept {
     if (s != invalid) ::shutdown(s, SHUT_RD);
 }
+#  endif
 } // namespace ethernetip::protocol::sock
 #endif
 
