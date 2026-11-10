@@ -47,15 +47,19 @@ void TcpSocketConnection::send(std::span<const uint8_t> data) {
 
 void TcpSocketConnection::close() {
     if (closed_.exchange(true)) return;
-    if (socket_ != sock::invalid) {
-        sock::close(socket_);
-        socket_ = sock::invalid;
-    }
+    // Wake read_loop's blocking recv(). On POSIX the fd is closed only after
+    // the read thread has exited (or when called from the read thread
+    // itself, which is about to return). On Windows this closes the socket.
+    sock::wake_blocked(socket_);
     if (read_thread_.joinable()
         && std::this_thread::get_id() != read_thread_.get_id()) {
         read_thread_.join();
     } else if (read_thread_.joinable()) {
         read_thread_.detach();
+    }
+    if (socket_ != sock::invalid) {
+        sock::close(socket_);
+        socket_ = sock::invalid;
     }
 }
 
@@ -137,11 +141,14 @@ void TcpSocket::start(const IpEndpoint& bind) {
 void TcpSocket::stop() {
     if (!running_.exchange(false)) return;
 
+    // Wake accept_loop's blocking accept(). On POSIX the listener is closed
+    // only after the accept thread has exited. On Windows this closes it.
+    sock::wake_blocked(listener_);
+    if (accept_thread_.joinable()) accept_thread_.join();
     if (listener_ != sock::invalid) {
         sock::close(listener_);
         listener_ = sock::invalid;
     }
-    if (accept_thread_.joinable()) accept_thread_.join();
 
     std::vector<std::shared_ptr<TcpSocketConnection>> live;
     {

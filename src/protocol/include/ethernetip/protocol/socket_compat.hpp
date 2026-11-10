@@ -20,6 +20,13 @@ constexpr socket_t invalid = INVALID_SOCKET;
 constexpr int      sockerr = SOCKET_ERROR;
 inline int  last_error() noexcept { return WSAGetLastError(); }
 inline int  close(socket_t s) noexcept { return ::closesocket(s); }
+/// Wake any thread blocked in recv/recvfrom/accept on s.
+/// Winsock: shutdown(SD_RECEIVE) does not unblock these calls (a listener
+/// even fails with WSAENOTCONN); only closesocket() does, so close here and
+/// invalidate the handle. The post-join close() in callers then is a no-op.
+inline void wake_blocked(socket_t& s) noexcept {
+    if (s != invalid) { ::closesocket(s); s = invalid; }
+}
 } // namespace ethernetip::protocol::sock
 #else
 #  include <arpa/inet.h>
@@ -33,6 +40,15 @@ constexpr socket_t invalid = -1;
 constexpr int      sockerr = -1;
 inline int  last_error() noexcept { return errno; }
 inline int  close(socket_t s) noexcept { return ::close(s); }
+/// Wake any thread blocked in recv/recvfrom/accept on s.
+/// POSIX close() does not do this, so shut down the read side only and
+/// leave the fd open: callers join the I/O thread first, then close().
+/// Only SHUT_RD, so a concurrent send()/sendto() cannot raise SIGPIPE.
+/// The return value is ignored: unconnected UDP sockets report ENOTCONN
+/// on Linux but still wake blocked readers.
+inline void wake_blocked(socket_t& s) noexcept {
+    if (s != invalid) ::shutdown(s, SHUT_RD);
+}
 } // namespace ethernetip::protocol::sock
 #endif
 
