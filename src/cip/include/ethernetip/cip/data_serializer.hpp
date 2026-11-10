@@ -2,6 +2,7 @@
 
 #include "ethernetip/cip/cip_data_type.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstdint>
 #include <cstring>
