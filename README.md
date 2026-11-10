@@ -679,7 +679,7 @@ Part of a family of open-source robotics / industrial-automation libraries by @C
 
 Thanks to everyone who has contributed fixes:
 
-- **Jeremy Stashluk** ([@jtstash-amzn](https://github.com/jtstash-amzn)) — Linux / GCC portability: missing `<cstring>` and `<algorithm>` includes that libstdc++ does not pull in transitively (#2, #3), and linking `Threads::Threads` for glibc < 2.34 (#4).
+- **Jeremy Stashluk** ([@jtstash-amzn](https://github.com/jtstash-amzn)) — Linux / GCC portability: missing `<cstring>` and `<algorithm>` includes that libstdc++ does not pull in transitively (#2, #3), and linking `Threads::Threads` for glibc < 2.34 (#4); per-platform socket teardown so `stop()` no longer deadlocks on Linux (#5).
 
 ---
 
