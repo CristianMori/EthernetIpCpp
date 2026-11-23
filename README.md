@@ -21,7 +21,11 @@ This is a C++20 port of [EthernetIpSharp](https://github.com/CristianMori/Ethern
 
 ## Install
 
-CMake FetchContent. Each target publishes its headers with a `BUILD_INTERFACE` include path, which is what the downstream build sees after `FetchContent_MakeAvailable`. Set the two options below to `OFF` before declaring the content: both default to `ON`, and leaving them on fetches GoogleTest and builds the sample programs.
+There are two ways to consume the library from CMake. Both give you the same target names.
+
+### Option 1: FetchContent
+
+Set the two options below to `OFF` before declaring the content: both default to `ON`, and leaving them on fetches GoogleTest and builds the sample programs. Install rules are off by default when the project is added as a subproject (`ETHERNETIP_INSTALL`), so your own `cmake --install` is unaffected.
 
 ```cmake
 set(ETHERNETIP_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
@@ -37,7 +41,37 @@ FetchContent_MakeAvailable(ethernetipcpp)
 target_link_libraries(my_app PRIVATE ethernetip::logix)
 ```
 
-`ethernetip::logix` is the static library `ethernetip_logix`. It links `ethernetip::device`, `ethernetip::connections`, and `ethernetip::protocol` (and through those, `ethernetip::cip`). Link `ethernetip::safety` instead when you need the CIP Safety adapter or originator. Requirements are CMake 3.20+ and a C++20 compiler; see [Building and testing](#building-and-testing).
+### Option 2: install and `find_package`
+
+Build and install once (tests and samples are never installed; add `-DETHERNETIP_BUILD_TESTS=OFF -DETHERNETIP_BUILD_SAMPLES=OFF` to skip building them):
+
+```sh
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cmake --install build --prefix /opt/ethernetip
+```
+
+Then, in the consuming project:
+
+```cmake
+find_package(EthernetIPCpp 0.3 CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE ethernetip::logix)
+```
+
+and configure it with `-DCMAKE_PREFIX_PATH=/opt/ethernetip`. The package also pulls in `Threads` for you. Version matching is `SameMinorVersion`: while the library is pre-1.0, `find_package(EthernetIPCpp 0.3)` accepts any 0.3.x but not 0.4. A runnable consumer lives in [`tests/package`](tests/package).
+
+### Exported targets
+
+| Target | Contents |
+|---|---|
+| `ethernetip::cip` | CIP core: paths, message router, services, objects |
+| `ethernetip::connections` | Forward Open / connection manager (links `cip`) |
+| `ethernetip::protocol` | Sockets, sessions, scanner and adapter (links `cip`, `connections`, `Threads::Threads`; `ws2_32` on Windows) |
+| `ethernetip::device` | Identity, assembly and other device objects (links `cip`, `connections`, `protocol`) |
+| `ethernetip::safety` | CIP Safety adapter and originator (links `cip`, `connections`, `device`, `protocol`) |
+| `ethernetip::logix` | Logix tag client and tag server (links `device`, `connections`, `protocol`) |
+
+The in-tree library names (`ethernetip_logix`, ...) keep working. `ethernetip::logix` is the static library `ethernetip_logix`; link `ethernetip::safety` instead when you need the CIP Safety adapter or originator. Requirements are CMake 3.20+ and a C++20 compiler; see [Building and testing](#building-and-testing).
 
 ## 30-second quickstart
 
