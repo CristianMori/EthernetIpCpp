@@ -23,8 +23,6 @@ This is a C++20 port of [EthernetIpSharp](https://github.com/CristianMori/Ethern
 
 CMake FetchContent. Each target publishes its headers with a `BUILD_INTERFACE` include path, which is what the downstream build sees after `FetchContent_MakeAvailable`. Set the two options below to `OFF` before declaring the content: both default to `ON`, and leaving them on fetches GoogleTest and builds the sample programs.
 
-<!-- TODO: cut a GitHub release and point GIT_TAG at that tag. No release tags exist yet; master is the default branch. -->
-
 ```cmake
 set(ETHERNETIP_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
 set(ETHERNETIP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
@@ -33,7 +31,7 @@ include(FetchContent)
 FetchContent_Declare(
     ethernetipcpp
     GIT_REPOSITORY https://github.com/CristianMori/EthernetIpCpp.git
-    GIT_TAG        master)
+    GIT_TAG        v0.3.0)
 FetchContent_MakeAvailable(ethernetipcpp)
 
 target_link_libraries(my_app PRIVATE ethernetip::logix)
