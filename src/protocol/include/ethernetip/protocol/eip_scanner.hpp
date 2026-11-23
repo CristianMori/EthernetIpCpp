@@ -5,10 +5,12 @@
 #include "ethernetip/protocol/eip_udp_transport.hpp"
 #include "ethernetip/protocol/forward_open_config.hpp"
 #include "ethernetip/protocol/ip_endpoint.hpp"
+#include "ethernetip/protocol/request_timeout.hpp"
 #include "ethernetip/protocol/scanner_connection.hpp"
 #include "ethernetip/protocol/socket_compat.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -37,6 +39,15 @@ public:
 
     EipScanner(const EipScanner&)            = delete;
     EipScanner& operator=(const EipScanner&) = delete;
+
+    /// Per-request reply timeout (default DefaultRequestTimeout = 5 s; zero
+    /// disables it). Covers every wait for an encapsulation reply:
+    /// RegisterSession, SendRRData, SendUnitData, Forward_Open/Close. On
+    /// expiry the TCP connection is closed, the session is dropped and
+    /// RequestTimeoutError is thrown; reconnect to continue. Set before
+    /// connect() so it also bounds RegisterSession.
+    void set_request_timeout(std::chrono::milliseconds t) noexcept { request_timeout_ = t; }
+    [[nodiscard]] std::chrono::milliseconds request_timeout() const noexcept { return request_timeout_; }
 
     void connect(const std::string& host, int port = DefaultTcpPort);
     void disconnect() noexcept;
@@ -113,13 +124,17 @@ private:
     void on_udp_message_dispatch(std::unique_ptr<messages::Message> msg);
     std::vector<uint8_t> send_encapsulated(uint16_t command,
                                              std::span<const uint8_t> payload);
-    void read_exact(uint8_t* dst, size_t n);
+    using Deadline = std::chrono::steady_clock::time_point;
+    [[nodiscard]] Deadline make_deadline() const noexcept;
+    void read_exact(uint8_t* dst, size_t n, Deadline deadline);
+    [[noreturn]] void abort_on_timeout();
     uint32_t register_session();
 
     sock::socket_t socket_         = sock::invalid;
     uint32_t       session_handle_ = 0;
     IpEndpoint     local_endpoint_;
     IpEndpoint     remote_endpoint_;
+    std::chrono::milliseconds request_timeout_ = DefaultRequestTimeout;
 
     std::mutex                       io_mu_;
     std::unique_ptr<EipUdpTransport> udp_transport_;

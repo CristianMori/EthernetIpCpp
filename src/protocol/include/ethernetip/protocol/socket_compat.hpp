@@ -63,7 +63,15 @@ inline void wake_blocked(socket_t& s) noexcept {
 
 #include "ethernetip/protocol/ip_endpoint.hpp"
 
+#include <chrono>
+
 namespace ethernetip::protocol::sock {
+
+/// Wait until s is readable (data, EOF or error pending) or `timeout`
+/// elapses. Returns true when readable, false on timeout. A non-positive
+/// timeout polls once. Socket errors count as readable so the following
+/// recv() reports them.
+[[nodiscard]] bool wait_readable(socket_t s, std::chrono::milliseconds timeout);
 
 /// Initialize sockets library (no-op on POSIX, WSAStartup on Windows).
 /// Idempotent — safe to call once per program at startup.

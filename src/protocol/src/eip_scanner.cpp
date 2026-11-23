@@ -63,15 +63,21 @@ void EipScanner::connect(const std::string& host, int port) {
         [this](std::unique_ptr<messages::Message> m) { on_udp_message_dispatch(std::move(m)); });
     udp_transport_->start(IpEndpoint{"0.0.0.0", 0});
 
-    session_handle_ = register_session();
+    try {
+        session_handle_ = register_session();
+    } catch (const RequestTimeoutError&) {
+        disconnect();   // also stops the UDP transport started above
+        throw;
+    }
     if (session_handle_ == 0) {
         throw std::runtime_error("EipScanner: RegisterSession returned 0");
     }
 }
 
 void EipScanner::disconnect() noexcept {
-    if (socket_ == sock::invalid) return;
-    if (session_handle_ != 0) {
+    // A request timeout already closed the socket; still tear down UDP.
+    if (socket_ == sock::invalid && !udp_transport_) return;
+    if (socket_ != sock::invalid && session_handle_ != 0) {
         try {
             std::array<uint8_t, EncapsulationHeader::Size> buf{};
             EncapsulationHeader hdr;
@@ -82,7 +88,7 @@ void EipScanner::disconnect() noexcept {
                           static_cast<int>(buf.size()), 0);
         } catch (...) {}
     }
-    sock::close(socket_);
+    if (socket_ != sock::invalid) sock::close(socket_);
     socket_         = sock::invalid;
     session_handle_ = 0;
     if (udp_transport_) {
@@ -107,22 +113,45 @@ uint32_t EipScanner::register_session() {
     if (sent != static_cast<int>(out.size())) {
         throw std::runtime_error("EipScanner: send failed");
     }
+    const auto deadline = make_deadline();
     std::array<uint8_t, EncapsulationHeader::Size> rhdr_buf{};
-    read_exact(rhdr_buf.data(), rhdr_buf.size());
+    read_exact(rhdr_buf.data(), rhdr_buf.size(), deadline);
     auto rhdr = EncapsulationHeader::parse(rhdr_buf);
     if (rhdr.status != EncapsulationStatus::Success) {
         throw std::runtime_error("EipScanner: RegisterSession failed");
     }
     if (rhdr.length > 0) {
         std::vector<uint8_t> body(rhdr.length);
-        read_exact(body.data(), body.size());
+        read_exact(body.data(), body.size(), deadline);
     }
     return rhdr.session_handle;
 }
 
-void EipScanner::read_exact(uint8_t* dst, size_t n) {
+EipScanner::Deadline EipScanner::make_deadline() const noexcept {
+    // Zero (or negative) disables the timeout: time_point::max() never expires.
+    if (request_timeout_.count() <= 0) return Deadline::max();
+    return std::chrono::steady_clock::now() + request_timeout_;
+}
+
+void EipScanner::abort_on_timeout() {
+    // The reply may still arrive later, so the byte stream is out of sync:
+    // drop the TCP connection and the session. The UDP transport is left
+    // running for live I/O connections; disconnect() stops it.
+    if (socket_ != sock::invalid) sock::close(socket_);
+    socket_         = sock::invalid;
+    session_handle_ = 0;
+    throw RequestTimeoutError("EipScanner: request timed out after "
+        + std::to_string(request_timeout_.count()) + " ms; connection closed");
+}
+
+void EipScanner::read_exact(uint8_t* dst, size_t n, Deadline deadline) {
     size_t got = 0;
     while (got < n) {
+        if (deadline != Deadline::max()) {
+            auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (!sock::wait_readable(socket_, left)) abort_on_timeout();
+        }
         int chunk = ::recv(socket_, reinterpret_cast<char*>(dst + got),
                             static_cast<int>(n - got), 0);
         if (chunk == 0) {
@@ -139,6 +168,10 @@ void EipScanner::read_exact(uint8_t* dst, size_t n) {
 std::vector<uint8_t> EipScanner::send_encapsulated(uint16_t command,
                                                      std::span<const uint8_t> payload) {
     std::scoped_lock lock(io_mu_);
+    if (socket_ == sock::invalid) {
+        throw std::runtime_error("EipScanner: not connected");
+    }
+    const auto deadline = make_deadline();
 
     EncapsulationHeader hdr;
     hdr.command        = static_cast<EncapsulationCommand>(command);
@@ -156,14 +189,14 @@ std::vector<uint8_t> EipScanner::send_encapsulated(uint16_t command,
         throw std::runtime_error("EipScanner: send failed");
     }
     std::array<uint8_t, EncapsulationHeader::Size> rhdr_buf{};
-    read_exact(rhdr_buf.data(), rhdr_buf.size());
+    read_exact(rhdr_buf.data(), rhdr_buf.size(), deadline);
     auto rhdr = EncapsulationHeader::parse(rhdr_buf);
     if (rhdr.status != EncapsulationStatus::Success) {
         throw std::runtime_error("EipScanner: encapsulation error 0x"
             + std::to_string(static_cast<uint32_t>(rhdr.status)));
     }
     std::vector<uint8_t> body(rhdr.length);
-    if (rhdr.length > 0) read_exact(body.data(), body.size());
+    if (rhdr.length > 0) read_exact(body.data(), body.size(), deadline);
     return body;
 }
 

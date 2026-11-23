@@ -2,6 +2,9 @@
 
 #include <atomic>
 #include <cstring>
+#ifndef _WIN32
+#  include <poll.h>
+#endif
 #include <stdexcept>
 
 namespace ethernetip::protocol::sock {
@@ -23,6 +26,33 @@ void ensure_initialized() {
 #else
 void ensure_initialized() {}
 #endif
+
+bool wait_readable(socket_t s, std::chrono::milliseconds timeout) {
+    long long ms = timeout.count();
+    if (ms < 0) ms = 0;
+    if (ms > 0x7FFFFFFF) ms = 0x7FFFFFFF;
+#ifdef _WIN32
+    WSAPOLLFD pfd{};
+    pfd.fd     = s;
+    pfd.events = POLLRDNORM;
+    int r = ::WSAPoll(&pfd, 1, static_cast<INT>(ms));
+#else
+    pollfd pfd{};
+    pfd.fd     = s;
+    pfd.events = POLLIN;
+    int r;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    for (;;) {
+        r = ::poll(&pfd, 1, static_cast<int>(ms));
+        if (r >= 0 || errno != EINTR) break;
+        auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        ms = left > 0 ? left : 0;
+    }
+#endif
+    // 0 = timeout; >0 readable/hup/err; <0 error -> let recv() report it.
+    return r != 0;
+}
 
 void to_sockaddr(const IpEndpoint& ep, sockaddr_in& addr) noexcept {
     std::memset(&addr, 0, sizeof(addr));
