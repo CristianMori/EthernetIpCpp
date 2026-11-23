@@ -14,6 +14,7 @@ add_library(ethernetip::logix ALIAS ethernetip_logix)
 
 target_include_directories(ethernetip_logix PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(ethernetip_logix PUBLIC
     ethernetip::device
@@ -21,3 +22,5 @@ target_link_libraries(ethernetip_logix PUBLIC
     ethernetip::protocol
 )
 target_compile_features(ethernetip_logix PUBLIC cxx_std_20)
+
+ethernetip_install_component(ethernetip_logix)

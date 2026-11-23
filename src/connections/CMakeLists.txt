@@ -8,6 +8,9 @@ add_library(ethernetip::connections ALIAS ethernetip_connections)
 
 target_include_directories(ethernetip_connections PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(ethernetip_connections PUBLIC ethernetip::cip)
 target_compile_features(ethernetip_connections PUBLIC cxx_std_20)
+
+ethernetip_install_component(ethernetip_connections)
