@@ -2,7 +2,9 @@
 
 #include "ethernetip/logix/logix_data_types.hpp"
 #include "ethernetip/protocol/socket_compat.hpp"
+#include "ethernetip/protocol/request_timeout.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -99,6 +101,16 @@ public:
 
     TagClient(const TagClient&)            = delete;
     TagClient& operator=(const TagClient&) = delete;
+
+    /// Per-request reply timeout (default protocol::DefaultRequestTimeout =
+    /// 5 s; zero disables it). Covers every wait for an encapsulation reply:
+    /// RegisterSession, SendRRData, SendUnitData, Forward_Open/Close. On
+    /// expiry the TCP connection is closed, the session and Class 3
+    /// connection are dropped and protocol::RequestTimeoutError is thrown;
+    /// call connect() again to continue. Set before connect() so it also
+    /// bounds RegisterSession.
+    void set_request_timeout(std::chrono::milliseconds t) noexcept { request_timeout_ = t; }
+    [[nodiscard]] std::chrono::milliseconds request_timeout() const noexcept { return request_timeout_; }
 
     /// Open TCP, RegisterSession.
     void connect();
@@ -286,12 +298,16 @@ private:
         else static_assert(sizeof(T) == 0, "Unsupported type for TagClient::write<T>");
     }
 
-    void read_exact(uint8_t* dst, size_t n);
+    using Deadline = std::chrono::steady_clock::time_point;
+    [[nodiscard]] Deadline make_deadline() const noexcept;
+    void read_exact(uint8_t* dst, size_t n, Deadline deadline);
+    [[noreturn]] void abort_on_timeout();
 
     std::string         host_;
     int                 port_           = DefaultPort;
     protocol::sock::socket_t socket_     = protocol::sock::invalid;
     uint32_t            session_handle_ = 0;
+    std::chrono::milliseconds request_timeout_ = protocol::DefaultRequestTimeout;
     std::mutex          io_mu_;                   // serializes request/response on the socket
 
     // Instance-ID cache populated by browse(). Keys are case-sensitive tag

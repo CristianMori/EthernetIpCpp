@@ -49,3 +49,8 @@ ethernetip_add_test(test_struct_wire_prefix
 ethernetip_add_test(test_tag_client_full_matrix
     SOURCES test_tag_client_full_matrix.cpp
     LIBS    ethernetip::logix ethernetip::device ethernetip::protocol)
+
+ethernetip_add_test(test_tag_client_request_timeout
+    SOURCES test_tag_client_request_timeout.cpp
+    LIBS    ethernetip::logix)
+target_include_directories(test_tag_client_request_timeout PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../support)

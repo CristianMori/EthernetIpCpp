@@ -125,14 +125,37 @@ void TagClient::disconnect() noexcept {
             // swallow — we're closing anyway
         }
     }
-    sock::close(socket_);
+    // A request timeout during close_class3() already closed the socket.
+    if (socket_ != sock::invalid) sock::close(socket_);
     socket_         = sock::invalid;
     session_handle_ = 0;
 }
 
-void TagClient::read_exact(uint8_t* dst, size_t n) {
+TagClient::Deadline TagClient::make_deadline() const noexcept {
+    // Zero (or negative) disables the timeout: time_point::max() never expires.
+    if (request_timeout_.count() <= 0) return Deadline::max();
+    return std::chrono::steady_clock::now() + request_timeout_;
+}
+
+void TagClient::abort_on_timeout() {
+    // The reply may still arrive later, so the byte stream is out of sync:
+    // drop the TCP connection, the session and the Class 3 connection.
+    if (socket_ != sock::invalid) sock::close(socket_);
+    socket_         = sock::invalid;
+    session_handle_ = 0;
+    class3_open_    = false;
+    throw protocol::RequestTimeoutError("TagClient: request timed out after "
+        + std::to_string(request_timeout_.count()) + " ms; connection closed");
+}
+
+void TagClient::read_exact(uint8_t* dst, size_t n, Deadline deadline) {
     size_t got = 0;
     while (got < n) {
+        if (deadline != Deadline::max()) {
+            auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (!sock::wait_readable(socket_, left)) abort_on_timeout();
+        }
         int chunk = ::recv(socket_, reinterpret_cast<char*>(dst + got),
                             static_cast<int>(n - got), 0);
         if (chunk == 0) {
@@ -149,6 +172,10 @@ void TagClient::read_exact(uint8_t* dst, size_t n) {
 std::vector<uint8_t> TagClient::send_encapsulated(uint16_t command,
                                                      std::span<const uint8_t> payload) {
     std::scoped_lock lock(io_mu_);
+    if (socket_ == sock::invalid) {
+        throw std::runtime_error("TagClient: not connected");
+    }
+    const auto deadline = make_deadline();
 
     EncapsulationHeader hdr;
     hdr.command        = static_cast<EncapsulationCommand>(command);
@@ -168,7 +195,7 @@ std::vector<uint8_t> TagClient::send_encapsulated(uint16_t command,
     }
 
     std::array<uint8_t, EncapsulationHeader::Size> rhdr_buf{};
-    read_exact(rhdr_buf.data(), rhdr_buf.size());
+    read_exact(rhdr_buf.data(), rhdr_buf.size(), deadline);
     auto rhdr = EncapsulationHeader::parse(rhdr_buf);
     if (rhdr.session_handle != 0 && session_handle_ == 0) {
         session_handle_ = rhdr.session_handle;
@@ -178,7 +205,7 @@ std::vector<uint8_t> TagClient::send_encapsulated(uint16_t command,
             + std::to_string(static_cast<uint32_t>(rhdr.status)));
     }
     std::vector<uint8_t> body(rhdr.length);
-    if (rhdr.length > 0) read_exact(body.data(), body.size());
+    if (rhdr.length > 0) read_exact(body.data(), body.size(), deadline);
     return body;
 }
 
