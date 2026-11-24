@@ -112,6 +112,15 @@ public:
     void set_request_timeout(std::chrono::milliseconds t) noexcept { request_timeout_ = t; }
     [[nodiscard]] std::chrono::milliseconds request_timeout() const noexcept { return request_timeout_; }
 
+    /// TCP connect timeout (default protocol::DefaultConnectTimeout = 5 s;
+    /// zero disables it and the OS connect timeout applies). On expiry the
+    /// socket is closed, the client stays not connected and
+    /// protocol::ConnectTimeoutError (a RequestTimeoutError) is thrown. A
+    /// refused or unreachable target still fails fast with
+    /// std::runtime_error. Set before connect().
+    void set_connect_timeout(std::chrono::milliseconds t) noexcept { connect_timeout_ = t; }
+    [[nodiscard]] std::chrono::milliseconds connect_timeout() const noexcept { return connect_timeout_; }
+
     /// Open TCP, RegisterSession.
     void connect();
 
@@ -308,6 +317,7 @@ private:
     protocol::sock::socket_t socket_     = protocol::sock::invalid;
     uint32_t            session_handle_ = 0;
     std::chrono::milliseconds request_timeout_ = protocol::DefaultRequestTimeout;
+    std::chrono::milliseconds connect_timeout_ = protocol::DefaultConnectTimeout;
     std::mutex          io_mu_;                   // serializes request/response on the socket
 
     // Instance-ID cache populated by browse(). Keys are case-sensitive tag

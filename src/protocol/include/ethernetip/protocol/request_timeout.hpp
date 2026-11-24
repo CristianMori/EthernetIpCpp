@@ -22,4 +22,19 @@ public:
         : std::runtime_error(what) {}
 };
 
+/// Default time a client waits for the TCP connect() to complete. Zero
+/// disables the timeout (the OS connect timeout applies).
+inline constexpr std::chrono::milliseconds DefaultConnectTimeout{5000};
+
+/// Thrown when the TCP connect does not complete within the connect
+/// timeout. Derives from RequestTimeoutError so one `catch
+/// (RequestTimeoutError&)` handles every client timeout, while callers that
+/// care can catch this type first. Refused / unreachable targets still fail
+/// fast with a plain std::runtime_error. The client stays not connected.
+class ConnectTimeoutError : public RequestTimeoutError {
+public:
+    explicit ConnectTimeoutError(const std::string& what)
+        : RequestTimeoutError(what) {}
+};
+
 } // namespace ethernetip::protocol

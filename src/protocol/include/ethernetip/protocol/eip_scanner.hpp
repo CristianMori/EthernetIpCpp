@@ -49,6 +49,14 @@ public:
     void set_request_timeout(std::chrono::milliseconds t) noexcept { request_timeout_ = t; }
     [[nodiscard]] std::chrono::milliseconds request_timeout() const noexcept { return request_timeout_; }
 
+    /// TCP connect timeout (default DefaultConnectTimeout = 5 s; zero
+    /// disables it and the OS connect timeout applies). On expiry the socket
+    /// is closed, the scanner stays not connected and ConnectTimeoutError
+    /// (a RequestTimeoutError) is thrown. A refused or unreachable target
+    /// still fails fast with std::runtime_error. Set before connect().
+    void set_connect_timeout(std::chrono::milliseconds t) noexcept { connect_timeout_ = t; }
+    [[nodiscard]] std::chrono::milliseconds connect_timeout() const noexcept { return connect_timeout_; }
+
     void connect(const std::string& host, int port = DefaultTcpPort);
     void disconnect() noexcept;
 
@@ -135,6 +143,7 @@ private:
     IpEndpoint     local_endpoint_;
     IpEndpoint     remote_endpoint_;
     std::chrono::milliseconds request_timeout_ = DefaultRequestTimeout;
+    std::chrono::milliseconds connect_timeout_ = DefaultConnectTimeout;
 
     std::mutex                       io_mu_;
     std::unique_ptr<EipUdpTransport> udp_transport_;

@@ -64,6 +64,8 @@ inline void wake_blocked(socket_t& s) noexcept {
 #include "ethernetip/protocol/ip_endpoint.hpp"
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 
 namespace ethernetip::protocol::sock {
 
@@ -72,6 +74,21 @@ namespace ethernetip::protocol::sock {
 /// timeout polls once. Socket errors count as readable so the following
 /// recv() reports them.
 [[nodiscard]] bool wait_readable(socket_t s, std::chrono::milliseconds timeout);
+
+/// Wait until s is writable (send buffer has room, or a connect finished
+/// or failed) or `timeout` elapses. Returns true when writable, false on
+/// timeout. A non-positive timeout polls once.
+[[nodiscard]] bool wait_writable(socket_t s, std::chrono::milliseconds timeout);
+
+enum class ConnectResult { Ok, TimedOut, Failed };
+
+/// connect() bounded by `timeout`: non-blocking connect, poll for writable,
+/// then SO_ERROR; the socket is back in blocking mode on return. A
+/// non-positive timeout is a plain blocking connect. On Failed, `err` holds
+/// the platform error code (as last_error()). TimedOut leaves the socket
+/// open: the caller closes it.
+[[nodiscard]] ConnectResult connect_timed(socket_t s, const sockaddr_in& addr,
+                                          std::chrono::milliseconds timeout, int& err);
 
 /// Initialize sockets library (no-op on POSIX, WSAStartup on Windows).
 /// Idempotent — safe to call once per program at startup.

@@ -42,8 +42,15 @@ void EipScanner::connect(const std::string& host, int port) {
     }
     sockaddr_in addr{};
     sock::to_sockaddr(IpEndpoint{host, static_cast<uint16_t>(port)}, addr);
-    if (::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == sock::sockerr) {
-        int err = sock::last_error();
+    int err = 0;
+    switch (sock::connect_timed(s, addr, connect_timeout_, err)) {
+    case sock::ConnectResult::Ok:
+        break;
+    case sock::ConnectResult::TimedOut:
+        sock::close(s);
+        throw ConnectTimeoutError("EipScanner: connect to " + host + ":" + std::to_string(port)
+            + " timed out after " + std::to_string(connect_timeout_.count()) + " ms");
+    case sock::ConnectResult::Failed:
         sock::close(s);
         throw std::runtime_error("EipScanner: connect to " + host + " failed (err "
             + std::to_string(err) + ")");

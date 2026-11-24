@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstring>
 #ifndef _WIN32
+#  include <fcntl.h>
 #  include <poll.h>
 #endif
 #include <stdexcept>
@@ -27,19 +28,22 @@ void ensure_initialized() {
 void ensure_initialized() {}
 #endif
 
-bool wait_readable(socket_t s, std::chrono::milliseconds timeout) {
+namespace {
+
+// Poll one socket for readability or writability for up to `timeout`.
+bool wait_fd(socket_t s, bool for_write, std::chrono::milliseconds timeout) {
     long long ms = timeout.count();
     if (ms < 0) ms = 0;
     if (ms > 0x7FFFFFFF) ms = 0x7FFFFFFF;
 #ifdef _WIN32
     WSAPOLLFD pfd{};
     pfd.fd     = s;
-    pfd.events = POLLRDNORM;
+    pfd.events = for_write ? POLLWRNORM : POLLRDNORM;
     int r = ::WSAPoll(&pfd, 1, static_cast<INT>(ms));
 #else
     pollfd pfd{};
     pfd.fd     = s;
-    pfd.events = POLLIN;
+    pfd.events = for_write ? POLLOUT : POLLIN;
     int r;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     for (;;) {
@@ -50,9 +54,83 @@ bool wait_readable(socket_t s, std::chrono::milliseconds timeout) {
         ms = left > 0 ? left : 0;
     }
 #endif
-    // 0 = timeout; >0 readable/hup/err; <0 error -> let recv() report it.
+    // 0 = timeout; >0 ready/hup/err; <0 error -> let the next call report it.
     return r != 0;
 }
+
+// Puts s in non-blocking mode; restores blocking mode on destruction.
+class NonBlocking {
+public:
+    explicit NonBlocking(socket_t s) noexcept : s_(s) {
+#ifdef _WIN32
+        u_long on = 1;
+        ok_ = ::ioctlsocket(s_, FIONBIO, &on) == 0;
+#else
+        flags_ = ::fcntl(s_, F_GETFL, 0);
+        ok_ = flags_ != -1 && ::fcntl(s_, F_SETFL, flags_ | O_NONBLOCK) != -1;
+#endif
+    }
+    ~NonBlocking() {
+        if (!ok_) return;
+#ifdef _WIN32
+        u_long off = 0;
+        ::ioctlsocket(s_, FIONBIO, &off);
+#else
+        ::fcntl(s_, F_SETFL, flags_);
+#endif
+    }
+    NonBlocking(const NonBlocking&) = delete;
+    NonBlocking& operator=(const NonBlocking&) = delete;
+    [[nodiscard]] bool ok() const noexcept { return ok_; }
+private:
+    socket_t s_;
+    bool     ok_ = false;
+#ifndef _WIN32
+    int      flags_ = 0;
+#endif
+};
+
+} // namespace
+
+bool wait_readable(socket_t s, std::chrono::milliseconds timeout) {
+    return wait_fd(s, false, timeout);
+}
+
+bool wait_writable(socket_t s, std::chrono::milliseconds timeout) {
+    return wait_fd(s, true, timeout);
+}
+
+ConnectResult connect_timed(socket_t s, const sockaddr_in& addr,
+                            std::chrono::milliseconds timeout, int& err) {
+    const auto* sa = reinterpret_cast<const sockaddr*>(&addr);
+    if (timeout.count() <= 0) {
+        if (::connect(s, sa, sizeof(addr)) == sockerr) {
+            err = last_error();
+            return ConnectResult::Failed;
+        }
+        return ConnectResult::Ok;
+    }
+    NonBlocking nb(s);
+    if (!nb.ok()) { err = last_error(); return ConnectResult::Failed; }
+    if (::connect(s, sa, sizeof(addr)) == 0) return ConnectResult::Ok;
+    err = last_error();
+#ifdef _WIN32
+    const bool pending = err == WSAEWOULDBLOCK;
+#else
+    const bool pending = err == EINPROGRESS || err == EINTR;
+#endif
+    if (!pending) return ConnectResult::Failed;   // refused/unreachable: fail fast
+    if (!wait_writable(s, timeout)) return ConnectResult::TimedOut;
+    int so_err = 0;
+    socklen_t len = sizeof(so_err);
+    if (::getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&so_err), &len) != 0) {
+        err = last_error();
+        return ConnectResult::Failed;
+    }
+    if (so_err != 0) { err = so_err; return ConnectResult::Failed; }
+    return ConnectResult::Ok;
+}
+
 
 void to_sockaddr(const IpEndpoint& ep, sockaddr_in& addr) noexcept {
     std::memset(&addr, 0, sizeof(addr));

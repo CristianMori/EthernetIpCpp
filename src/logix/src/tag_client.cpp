@@ -86,8 +86,16 @@ void TagClient::connect() {
     }
     sockaddr_in addr{};
     protocol::sock::to_sockaddr(protocol::IpEndpoint{host_, static_cast<uint16_t>(port_)}, addr);
-    if (::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == sock::sockerr) {
-        int err = sock::last_error();
+    int err = 0;
+    switch (sock::connect_timed(s, addr, connect_timeout_, err)) {
+    case sock::ConnectResult::Ok:
+        break;
+    case sock::ConnectResult::TimedOut:
+        sock::close(s);
+        throw protocol::ConnectTimeoutError("TagClient: connect to " + host_ + ":"
+            + std::to_string(port_) + " timed out after "
+            + std::to_string(connect_timeout_.count()) + " ms");
+    case sock::ConnectResult::Failed:
         sock::close(s);
         throw std::runtime_error("TagClient: connect to " + host_ + " failed (err " + std::to_string(err) + ")");
     }
