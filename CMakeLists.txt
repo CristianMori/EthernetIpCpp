@@ -39,7 +39,14 @@ function(ethernetip_install_component target)
         return()
     endif()
     string(REPLACE "ethernetip_" "" _component "${target}")
-    set_target_properties(${target} PROPERTIES EXPORT_NAME ${_component})
+    # DEBUG_POSTFIX keeps Debug and Release archives distinct in one prefix
+    # (ethernetip_cip.lib vs ethernetip_cipd.lib). Without it the second
+    # `cmake --install` overwrites the first, and on MSVC a Debug consumer
+    # then fails with LNK2038 against the Release library. Set here, after the
+    # ETHERNETIP_INSTALL guard, so FetchContent/add_subdirectory builds keep
+    # their plain output names.
+    set_target_properties(${target} PROPERTIES EXPORT_NAME ${_component}
+                                               DEBUG_POSTFIX d)
     install(TARGETS ${target}
         EXPORT EthernetIPCppTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
