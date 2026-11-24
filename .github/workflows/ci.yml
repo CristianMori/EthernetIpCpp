@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,      os: ubuntu-latest,  cc: gcc,   cxx: g++ }
+          - { name: linux-clang,    os: ubuntu-latest,  cc: clang, cxx: clang++ }
+          - { name: windows-msvc,   os: windows-latest, cc: cl,    cxx: cl }
+          - { name: macos-appleclang, os: macos-latest, cc: clang, cxx: clang++ }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ninja + the MSVC command-line toolchain keeps one set of cmake/ctest
+      # commands for every platform. The runner's Visual Studio generator would
+      # work too, but it is multi-config and needs per-OS flags (-A, --config).
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Ninja
+        shell: bash
+        run: |
+          if ! command -v ninja >/dev/null; then
+            case "$RUNNER_OS" in
+              Linux) sudo apt-get update && sudo apt-get install -y ninja-build ;;
+              macOS) brew install ninja ;;
+              Windows) choco install ninja -y ;;
+            esac
+          fi
+          ninja --version
+          cmake --version
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # Per-test timeout so a hung socket test fails fast; the step timeout is
+      # the backstop.
+      - name: Test
+        timeout-minutes: 15
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+      - name: Install to a temporary prefix
+        shell: bash
+        run: cmake --install build --prefix "$RUNNER_TEMP/eip-install"
+
+      - name: Build and run the installed-package consumer
+        shell: bash
+        run: |
+          cmake -S tests/package -B build-pkg -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/eip-install"
+          cmake --build build-pkg
+          ctest --test-dir build-pkg --output-on-failure --timeout 60
