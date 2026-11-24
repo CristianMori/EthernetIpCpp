@@ -58,6 +58,10 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
+      - name: DIAG macOS send behaviour
+        if: runner.os == 'macOS'
+        run: clang .github/diag_send.c -o diag_send && ./diag_send
+
       # Per-test timeout so a hung socket test fails fast; the step timeout is
       # the backstop.
       - name: Test
