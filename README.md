@@ -36,7 +36,7 @@ include(FetchContent)
 FetchContent_Declare(
     ethernetipcpp
     GIT_REPOSITORY https://github.com/CristianMori/EthernetIpCpp.git
-    GIT_TAG        v0.3.2)
+    GIT_TAG        v0.3.3)
 FetchContent_MakeAvailable(ethernetipcpp)
 
 target_link_libraries(my_app PRIVATE ethernetip::logix)
