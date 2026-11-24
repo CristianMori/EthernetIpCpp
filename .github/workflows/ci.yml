@@ -75,3 +75,22 @@ jobs:
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/eip-install"
           cmake --build build-pkg
           ctest --test-dir build-pkg --output-on-failure --timeout 60
+
+      # Debug and Release libraries must coexist in one prefix (MSVC rejects a
+      # Debug consumer linked against Release archives with LNK2038). Libraries
+      # only, so this adds about a minute.
+      - name: Install Debug into the same prefix
+        shell: bash
+        run: |
+          cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DETHERNETIP_BUILD_TESTS=OFF -DETHERNETIP_BUILD_SAMPLES=OFF
+          cmake --build build-debug --parallel
+          cmake --install build-debug --prefix "$RUNNER_TEMP/eip-install"
+
+      - name: Build and run the installed-package consumer (Debug)
+        shell: bash
+        run: |
+          cmake -S tests/package -B build-pkg-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/eip-install"
+          cmake --build build-pkg-debug
+          ctest --test-dir build-pkg-debug --output-on-failure --timeout 60
