@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <optional>
 #ifndef _WIN32
 #  include <fcntl.h>
 #  include <poll.h>
@@ -90,6 +91,14 @@ private:
 #endif
 };
 
+bool would_block(int e) noexcept {
+#ifdef _WIN32
+    return e == WSAEWOULDBLOCK;
+#else
+    return e == EAGAIN || e == EWOULDBLOCK;
+#endif
+}
+
 } // namespace
 
 bool wait_readable(socket_t s, std::chrono::milliseconds timeout) {
@@ -131,6 +140,49 @@ ConnectResult connect_timed(socket_t s, const sockaddr_in& addr,
     return ConnectResult::Ok;
 }
 
+SendResult send_all(socket_t s, const uint8_t* data, size_t n,
+                    std::chrono::steady_clock::time_point deadline, int& err) {
+    const bool bounded = deadline != std::chrono::steady_clock::time_point::max();
+#ifdef _WIN32
+    // Winsock has no per-call non-blocking flag, and a blocking send of more
+    // than the free buffer space waits for the peer: go non-blocking.
+    std::optional<NonBlocking> nb;
+    if (bounded) {
+        nb.emplace(s);
+        if (!nb->ok()) { err = last_error(); return SendResult::Failed; }
+    }
+    const int flags = 0;
+#else
+    int flags = 0;
+#  ifdef MSG_NOSIGNAL
+    flags |= MSG_NOSIGNAL;
+#  endif
+    if (bounded) flags |= MSG_DONTWAIT;
+#endif
+    auto left_ms = [&] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+    };
+    size_t off = 0;
+    while (off < n) {
+        int r = ::send(s, reinterpret_cast<const char*>(data + off),
+                       static_cast<int>(n - off), flags);
+        if (r == sockerr) {
+            int e = last_error();
+#ifndef _WIN32
+            if (e == EINTR) continue;
+#endif
+            if (bounded && would_block(e)) {
+                if (!wait_writable(s, left_ms())) return SendResult::TimedOut;
+                continue;
+            }
+            err = e;
+            return SendResult::Failed;
+        }
+        off += static_cast<size_t>(r);
+    }
+    return SendResult::Ok;
+}
 
 void to_sockaddr(const IpEndpoint& ep, sockaddr_in& addr) noexcept {
     std::memset(&addr, 0, sizeof(addr));

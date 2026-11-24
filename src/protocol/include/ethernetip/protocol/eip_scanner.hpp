@@ -136,6 +136,7 @@ private:
     [[nodiscard]] Deadline make_deadline() const noexcept;
     void read_exact(uint8_t* dst, size_t n, Deadline deadline);
     [[noreturn]] void abort_on_timeout();
+    void send_bounded(const uint8_t* data, size_t n, Deadline deadline);
     uint32_t register_session();
 
     sock::socket_t socket_         = sock::invalid;

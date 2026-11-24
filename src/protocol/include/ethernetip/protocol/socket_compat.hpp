@@ -90,6 +90,15 @@ enum class ConnectResult { Ok, TimedOut, Failed };
 [[nodiscard]] ConnectResult connect_timed(socket_t s, const sockaddr_in& addr,
                                           std::chrono::milliseconds timeout, int& err);
 
+enum class SendResult { Ok, TimedOut, Failed };
+
+/// Send all n bytes, handling partial sends. With a finite `deadline` no
+/// call can block past it (Winsock: non-blocking mode for the duration,
+/// restored on return; POSIX: MSG_DONTWAIT). With time_point::max() it is a
+/// plain blocking loop. On Failed, `err` holds the platform error code.
+[[nodiscard]] SendResult send_all(socket_t s, const uint8_t* data, size_t n,
+                                  std::chrono::steady_clock::time_point deadline, int& err);
+
 /// Initialize sockets library (no-op on POSIX, WSAStartup on Windows).
 /// Idempotent — safe to call once per program at startup.
 void ensure_initialized();

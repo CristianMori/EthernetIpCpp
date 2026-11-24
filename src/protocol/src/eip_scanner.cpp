@@ -91,8 +91,10 @@ void EipScanner::disconnect() noexcept {
             hdr.command        = EncapsulationCommand::UnregisterSession;
             hdr.session_handle = session_handle_;
             hdr.write_to(buf);
-            (void)::send(socket_, reinterpret_cast<const char*>(buf.data()),
-                          static_cast<int>(buf.size()), 0);
+            // Best effort, bounded: never block on a peer that stopped reading.
+            int err = 0;
+            (void)sock::send_all(socket_, buf.data(), buf.size(),
+                                 std::chrono::steady_clock::now() + std::chrono::milliseconds(100), err);
         } catch (...) {}
     }
     if (socket_ != sock::invalid) sock::close(socket_);
@@ -115,12 +117,9 @@ uint32_t EipScanner::register_session() {
     std::vector<uint8_t> out(EncapsulationHeader::Size + payload.size());
     hdr.write_to(out);
     std::memcpy(out.data() + EncapsulationHeader::Size, payload.data(), payload.size());
-    int sent = ::send(socket_, reinterpret_cast<const char*>(out.data()),
-                       static_cast<int>(out.size()), 0);
-    if (sent != static_cast<int>(out.size())) {
-        throw std::runtime_error("EipScanner: send failed");
-    }
+    // One deadline covers the send and the wait for the reply.
     const auto deadline = make_deadline();
+    send_bounded(out.data(), out.size(), deadline);
     std::array<uint8_t, EncapsulationHeader::Size> rhdr_buf{};
     read_exact(rhdr_buf.data(), rhdr_buf.size(), deadline);
     auto rhdr = EncapsulationHeader::parse(rhdr_buf);
@@ -149,6 +148,16 @@ void EipScanner::abort_on_timeout() {
     session_handle_ = 0;
     throw RequestTimeoutError("EipScanner: request timed out after "
         + std::to_string(request_timeout_.count()) + " ms; connection closed");
+}
+
+void EipScanner::send_bounded(const uint8_t* data, size_t n, Deadline deadline) {
+    int err = 0;
+    switch (sock::send_all(socket_, data, n, deadline, err)) {
+    case sock::SendResult::Ok:       return;
+    case sock::SendResult::TimedOut: abort_on_timeout();   // peer stopped reading
+    case sock::SendResult::Failed:
+        throw std::runtime_error("EipScanner: send failed (err " + std::to_string(err) + ")");
+    }
 }
 
 void EipScanner::read_exact(uint8_t* dst, size_t n, Deadline deadline) {
@@ -190,11 +199,7 @@ std::vector<uint8_t> EipScanner::send_encapsulated(uint16_t command,
     if (!payload.empty()) {
         std::memcpy(out.data() + EncapsulationHeader::Size, payload.data(), payload.size());
     }
-    int sent = ::send(socket_, reinterpret_cast<const char*>(out.data()),
-                       static_cast<int>(out.size()), 0);
-    if (sent != static_cast<int>(out.size())) {
-        throw std::runtime_error("EipScanner: send failed");
-    }
+    send_bounded(out.data(), out.size(), deadline);
     std::array<uint8_t, EncapsulationHeader::Size> rhdr_buf{};
     read_exact(rhdr_buf.data(), rhdr_buf.size(), deadline);
     auto rhdr = EncapsulationHeader::parse(rhdr_buf);
