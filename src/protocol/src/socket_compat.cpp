@@ -143,21 +143,27 @@ ConnectResult connect_timed(socket_t s, const sockaddr_in& addr,
 SendResult send_all(socket_t s, const uint8_t* data, size_t n,
                     std::chrono::steady_clock::time_point deadline, int& err) {
     const bool bounded = deadline != std::chrono::steady_clock::time_point::max();
-#ifdef _WIN32
-    // Winsock has no per-call non-blocking flag, and a blocking send of more
-    // than the free buffer space waits for the peer: go non-blocking.
+    // A bounded send must never block in the kernel. MSG_DONTWAIT is not
+    // enough: Darwin ignores it on a blocking socket, and Winsock has no
+    // per-call flag at all. So every platform puts the socket in non-blocking
+    // mode for the duration of the call (restored by the RAII guard on every
+    // exit path) and waits for writability itself.
     std::optional<NonBlocking> nb;
     if (bounded) {
         nb.emplace(s);
         if (!nb->ok()) { err = last_error(); return SendResult::Failed; }
     }
-    const int flags = 0;
-#else
     int flags = 0;
+#ifndef _WIN32
 #  ifdef MSG_NOSIGNAL
     flags |= MSG_NOSIGNAL;
 #  endif
-    if (bounded) flags |= MSG_DONTWAIT;
+#  ifdef SO_NOSIGPIPE
+    {   // macOS/BSD have no MSG_NOSIGNAL: suppress SIGPIPE per socket instead.
+        int on = 1;
+        (void)::setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+    }
+#  endif
 #endif
     auto left_ms = [&] {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
