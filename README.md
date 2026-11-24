@@ -15,7 +15,7 @@ This is a C++20 port of [EthernetIpSharp](https://github.com/CristianMori/Ethern
 
 - **Fragmented tag I/O** — Logix fragmented read/write (CIP services `0x52` / `0x53`) is walker-aware: nested UDT member paths such as `Program:MainProgram.motor.counts[5]` dispatch through the `handle_*_tag_fragmented_at` siblings instead of only resolving at the tag root.
 - **Full atomic type coverage** — `BOOL`, `SINT`, `INT`, `DINT`, `LINT`, `USINT`, `UINT`, `UDINT`, `ULINT`, `REAL`, `LREAL`, `BYTE`, `WORD`, `DWORD`, `LWORD` on both client and server (see `logix_data_types.hpp`).
-- **Tests** — 238 tests passing under `ctest`.
+- **Tests** — 253 tests passing under `ctest`.
 
 ---
 
@@ -435,6 +435,37 @@ for (int i = 0; i < 10'000; ++i)
     (void)client.read<int32_t>("rate");
 ```
 
+### Client timeouts
+
+`EipScanner` and `TagClient` (the safety scanner rides on `EipScanner`) never
+wait forever on a target that stops answering:
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `set_connect_timeout(ms)` / `connect_timeout()` | 5000 ms | the TCP `connect()` (non-blocking connect + poll, so no OS SYN timeout of tens of seconds) |
+| `set_request_timeout(ms)` / `request_timeout()` | 5000 ms | each request: the send **and** the wait for the reply (RegisterSession, SendRRData, SendUnitData, Forward_Open/Close). A peer that accepts the connection but stops reading can no longer block `send()` once its buffers fill |
+
+Zero disables a timeout. Set both before `connect()`.
+
+```cpp
+EipScanner scanner;
+scanner.set_connect_timeout(std::chrono::seconds(2));
+scanner.set_request_timeout(std::chrono::seconds(3));
+try {
+    scanner.connect("192.168.1.50");
+} catch (const protocol::ConnectTimeoutError& e) {   // nothing answered the SYN
+    // e.what(): "EipScanner: connect to 192.168.1.50:44818 timed out after 2000 ms"
+} catch (const protocol::RequestTimeoutError& e) {   // connected, then went silent
+}
+```
+
+`ConnectTimeoutError` derives from `RequestTimeoutError` (itself a
+`std::runtime_error`), so one `catch (RequestTimeoutError&)` covers every
+timeout. A connect timeout leaves the client not connected. A request timeout
+(send or reply) closes the TCP connection and drops the session; call
+`connect()` again to continue. A refused or unreachable target still fails
+immediately with a plain `std::runtime_error`.
+
 ### Logix tag server
 
 ```cpp
@@ -676,7 +707,7 @@ The full safety ownership state machine (Propose_TUNID / Apply_TUNID / Configure
 
 ## Security hardening
 
-Six rounds of static security review have been applied across the stack, landing 35 commits. The test suite currently stands at **238 tests passing** under `ctest`.
+Six rounds of static security review have been applied across the stack, landing 35 commits. The test suite currently stands at **253 tests passing** under `ctest`.
 
 Coverage spans both server-side (adapter / target) and client-side (scanner) paths:
 
