@@ -129,7 +129,7 @@ private:
 // connected loopback pair; `peer` never reads.
 struct SocketPair {
     sock::socket_t client = sock::invalid, peer = sock::invalid;
-    SocketPair() {
+    explicit SocketPair(int bufsize = 4096) {
         sock::ensure_initialized();
         auto l = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         sockaddr_in a{};
@@ -139,7 +139,7 @@ struct SocketPair {
         socklen_t len = sizeof(a);
         ::getsockname(l, reinterpret_cast<sockaddr*>(&a), &len);
         client = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        int small = 4096;
+        int small = bufsize;
         ::setsockopt(client, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&small), sizeof(small));
         ::connect(client, reinterpret_cast<sockaddr*>(&a), sizeof(a));
         peer = ::accept(l, nullptr, nullptr);
@@ -174,7 +174,10 @@ TEST(SendAllTest, TimesOutAgainstPeerThatNeverReads) {
 }
 
 TEST(SendAllTest, DeliversEverythingToAReadingPeerAcrossPartialSends) {
-    SocketPair p;
+    // Buffers well below the payload force partial sends, but must stay above
+    // the loopback MSS: with a 4 KB window the receiver never opens a full
+    // segment and TCP crawls on persist-timer probes (stalled on CI runners).
+    SocketPair p(256 * 1024);
     constexpr size_t N = 4u << 20;
     std::vector<uint8_t> data(N);
     for (size_t i = 0; i < N; ++i) data[i] = static_cast<uint8_t>(i * 31u);
